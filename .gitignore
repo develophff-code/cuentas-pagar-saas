@@ -1,0 +1,33 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Build
+dist/
+build/
+
+# Environment variables & secrets (CRÍTICO: nunca commitear)
+.env
+.env.local
+.env.*.local
+
+# IDEs & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Database / Prisma
+*.db
+*.sqlite
+*.sqlite3
+prisma/migrations/dev.db
+
+# Logs
+logs/
+*.log

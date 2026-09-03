@@ -1,0 +1,34 @@
+{
+  "name": "cuentas-pagar-saas",
+  "version": "1.0.0",
+  "description": "SaaS de Gestión de Cuentas a Pagar y Proveedores vía WhatsApp",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev"
+  },
+  "keywords": ["whatsapp", "waha", "cuentas-a-pagar", "facturas", "gemini", "fastify", "saas"],
+  "author": "Horacio",
+  "license": "ISC",
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@fastify/formbody": "^8.0.2",
+    "@google/generative-ai": "^0.24.1",
+    "@prisma/client": "^6.4.1",
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "node-cron": "^3.0.3",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "@types/node-cron": "^3.0.11",
+    "prisma": "^6.4.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}

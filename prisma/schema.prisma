@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PlanType {
+  BASIC
+  PROFESSIONAL
+  ULTRA
+}
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+}
+
+enum InvoiceStatus {
+  PENDIENTE
+  EN_GRILLA
+  APROBADA
+  PAGADA
+  POSTERGADA
+  CANCELADA
+}
+
+model Tenant {
+  id           String    @id @default(uuid())
+  cuit         String    @unique
+  businessName String
+  address      String?
+  planType     PlanType  @default(BASIC)
+  isActive     Boolean   @default(true)
+  maxUsers     Int       @default(1)
+  maxSuppliers Int       @default(25)
+  maxInvoices  Int       @default(100)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  users             TenantUser[]
+  suppliers         Supplier[]
+  invoices          Invoice[]
+  paymentGridConfig PaymentGridConfig?
+
+  @@map("tenants")
+}
+
+model TenantUser {
+  id          String   @id @default(uuid())
+  tenantId    String
+  phoneNumber String   @unique // Formato internacional ej: 54911xxxxxxxx
+  fullName    String
+  role        UserRole @default(ADMIN)
+  isVerified  Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([phoneNumber])
+  @@map("tenant_users")
+}
+
+model Supplier {
+  id           String   @id @default(uuid())
+  tenantId     String
+  cuit         String   // CUIT único por tenant
+  businessName String
+  categories   String   // Rubro o rubros separados por comas (ej: "Librería, Insumos Informáticos")
+  email        String?
+  phone        String?
+  address      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant       Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bankAccounts SupplierBankAccount[]
+  invoices     Invoice[]
+
+  @@unique([tenantId, cuit])
+  @@index([tenantId, categories])
+  @@map("suppliers")
+}
+
+model SupplierBankAccount {
+  id          String   @id @default(uuid())
+  supplierId  String
+  bankName    String?
+  cbuCvu      String?  // 22 dígitos
+  alias       String?  // Alias alfanumérico
+  accountType String?  // CC / CA
+  isPrimary   Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@map("supplier_bank_accounts")
+}
+
+model Invoice {
+  id                   String        @id @default(uuid())
+  tenantId             String
+  supplierId           String
+  invoiceNumber        String
+  invoiceType          String        @default("A") // Factura A, B, C, Recibo, etc.
+  amount               Decimal       @db.Decimal(12, 2)
+  vatAmount            Decimal?      @db.Decimal(12, 2)
+  issueDate            DateTime?
+  dueDate              DateTime
+  scheduledPaymentDate DateTime      // Fecha asignada en la grilla semanal
+  status               InvoiceStatus @default(EN_GRILLA)
+  fileUrl              String?
+  mimeType             String?
+  notes                String?
+  rawOcrData           Json?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, scheduledPaymentDate])
+  @@index([tenantId, status])
+  @@map("invoices")
+}
+
+model PaymentGridConfig {
+  id             String   @id @default(uuid())
+  tenantId       String   @unique
+  paymentDays    String   @default("MARTES,JUEVES") // Días de la semana permitidos para pagos
+  morningAlertTime String @default("08:00")         // Hora para el reporte diario
+  autoSchedule   Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("payment_grid_configs")
+}
+
+model ConversationSession {
+  id          String   @id @default(uuid())
+  phoneNumber String   @unique
+  state       String   @default("IDLE")
+  contextData Json?
+  updatedAt   DateTime @updatedAt
+
+  @@map("conversation_sessions")
+}
