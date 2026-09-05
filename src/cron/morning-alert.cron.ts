@@ -32,7 +32,7 @@ export async function runMorningPaymentNotifications(): Promise<void> {
           },
           include: {
             supplier: {
-              include: { bankAccounts: true },
+              include: { category: true, bankAccounts: true },
             },
           },
         },
@@ -52,7 +52,7 @@ export async function runMorningPaymentNotifications(): Promise<void> {
         const bank = inv.supplier.bankAccounts[0];
         const bankDetails = bank?.alias ? `Alias: ${bank.alias}` : bank?.cbuCvu ? `CBU: ${bank.cbuCvu}` : 'Sin datos';
 
-        body += `${index + 1}️⃣ *${inv.supplier.businessName}* (${inv.supplier.categories})\n`;
+        body += `${index + 1}️⃣ *${inv.supplier.businessName}* (${inv.supplier.category.name})\n`;
         body += `   💵 $ ${amt.toLocaleString('es-AR')} — Comprobante: ${inv.invoiceNumber}\n`;
         body += `   🏦 ${bankDetails}\n\n`;
       });

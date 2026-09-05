@@ -41,6 +41,7 @@ model Tenant {
   updatedAt    DateTime  @updatedAt
 
   users             TenantUser[]
+  categories        Category[]
   suppliers         Supplier[]
   invoices          Invoice[]
   paymentGridConfig PaymentGridConfig?
@@ -64,24 +65,39 @@ model TenantUser {
   @@map("tenant_users")
 }
 
+model Category {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String   // Nombre del rubro ej: "Ferretería", "Insumos", "Materia Prima"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  suppliers Supplier[]
+
+  @@unique([tenantId, name])
+  @@map("categories")
+}
+
 model Supplier {
   id           String   @id @default(uuid())
   tenantId     String
-  cuit         String   // CUIT único por tenant
-  businessName String
-  categories   String   // Rubro o rubros separados por comas (ej: "Librería, Insumos Informáticos")
+  categoryId   String
+  businessName String   // Obligatorio
+  phone        String   // Obligatorio: celular / WhatsApp directo
+  cuit         String?  // Opcional para contemplar proveedores informales
   email        String?
-  phone        String?
   address      String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
   tenant       Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category     Category              @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   bankAccounts SupplierBankAccount[]
   invoices     Invoice[]
 
-  @@unique([tenantId, cuit])
-  @@index([tenantId, categories])
+  @@index([tenantId, cuit])
+  @@index([tenantId, categoryId])
   @@map("suppliers")
 }
 
@@ -129,13 +145,13 @@ model Invoice {
 }
 
 model PaymentGridConfig {
-  id             String   @id @default(uuid())
-  tenantId       String   @unique
-  paymentDays    String   @default("MARTES,JUEVES") // Días de la semana permitidos para pagos
-  morningAlertTime String @default("08:00")         // Hora para el reporte diario
-  autoSchedule   Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id               String   @id @default(uuid())
+  tenantId         String   @unique
+  paymentDays      String   @default("MARTES,JUEVES") // Días de la semana permitidos para pagos
+  morningAlertTime String   @default("08:00")         // Hora para el reporte diario
+  autoSchedule     Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 

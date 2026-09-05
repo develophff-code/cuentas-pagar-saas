@@ -42,7 +42,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       where: { tenantId },
       include: {
         supplier: {
-          include: { bankAccounts: true },
+          include: { category: true, bankAccounts: true },
         },
       },
       orderBy: { scheduledPaymentDate: 'asc' },
@@ -57,13 +57,13 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
 
     const suppliers = await prisma.supplier.findMany({
       where: { tenantId },
-      include: { invoices: true },
+      include: { category: true, invoices: true },
     });
 
     const rubroMap: Record<string, { totalAmount: number; invoiceCount: number; suppliers: string[] }> = {};
 
     suppliers.forEach((s) => {
-      const rubro = s.categories || 'Sin Rubro';
+      const rubro = s.category?.name || 'Sin Rubro';
       if (!rubroMap[rubro]) {
         rubroMap[rubro] = { totalAmount: 0, invoiceCount: 0, suppliers: [] };
       }
@@ -79,7 +79,42 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
     return reply.send({ success: true, rubros: rubroMap });
   });
 
-  // 3. Modificar estado o fecha de una factura desde el Dashboard
+  // 3. Gestión de Categorías / Rubros (Dashboard Web)
+  fastify.get('/api/tenants/:tenantId/categories', async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const categories = await prisma.category.findMany({
+      where: { tenantId },
+      orderBy: { name: 'asc' },
+    });
+    return reply.send({ success: true, categories });
+  });
+
+  fastify.post('/api/tenants/:tenantId/categories', async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const { name } = request.body as { name: string };
+
+    if (!name?.trim()) {
+      return reply.status(400).send({ success: false, message: 'El nombre de la categoría es requerido.' });
+    }
+
+    const category = await prisma.category.upsert({
+      where: {
+        tenantId_name: {
+          tenantId,
+          name: name.trim(),
+        },
+      },
+      update: {},
+      create: {
+        tenantId,
+        name: name.trim(),
+      },
+    });
+
+    return reply.status(201).send({ success: true, category });
+  });
+
+  // 4. Modificar estado o fecha de una factura desde el Dashboard
   fastify.patch('/api/invoices/:invoiceId', async (request, reply) => {
     const { invoiceId } = request.params as { invoiceId: string };
     const { status, scheduledPaymentDate } = request.body as any;

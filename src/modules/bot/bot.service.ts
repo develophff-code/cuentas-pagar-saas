@@ -55,7 +55,17 @@ export class BotService {
       return;
     }
 
-    // 3. Comandos de texto para usuarios registrados
+    // 3. Comprobar si el usuario registrado está en medio de un flujo de alta de proveedor
+    const activeSession = await prisma.conversationSession.findUnique({
+      where: { phoneNumber: cleanPhone },
+    });
+
+    if (activeSession && activeSession.state.startsWith('SUPPLIER_REG_')) {
+      await this.handleSupplierRegistrationStep(tenantUser, activeSession, rawFrom, text);
+      return;
+    }
+
+    // 4. Comandos de texto e intenciones para usuarios registrados
     await this.handleRegisteredUserText(tenantUser, rawFrom, text);
   }
 
@@ -178,7 +188,7 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
       const ctx = (session.contextData as any) || {};
 
       try {
-        // Crear Tenant y TenantUser
+        // Crear Tenant, Categorías iniciales y TenantUser
         const tenant = await prisma.tenant.create({
           data: {
             cuit: ctx.cuit || '00-00000000-0',
@@ -187,6 +197,16 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
             maxUsers: ctx.maxUsers || 1,
             maxSuppliers: ctx.maxSuppliers || 25,
             maxInvoices: ctx.maxInvoices || 100,
+            categories: {
+              createMany: {
+                data: [
+                  { name: 'General' },
+                  { name: 'Insumos y Oficina' },
+                  { name: 'Materia Prima' },
+                  { name: 'Servicios' },
+                ],
+              },
+            },
             paymentGridConfig: {
               create: {
                 paymentDays: 'MARTES,JUEVES',
@@ -213,13 +233,217 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
 * Días de pago fijados: *Martes y Jueves*
 
 🚀 *¡Ya puedes empezar!*
-Pruébalo ahora mismo: *envía una foto o PDF de una factura de un proveedor* y el sistema la procesará de inmediato.`;
+* Envía una foto o PDF de una factura de un proveedor.
+* O escribe *"Quiero dar de alta un nuevo proveedor"* para registrar proveedores manualmente.`;
 
         await wahaClient.sendText(rawFrom, successMessage);
       } catch (err: any) {
         console.error('[BotService] Error creando empresa:', err);
         await wahaClient.sendText(rawFrom, 'Hubo un inconveniente creando la cuenta. Si ya estabas registrado, intenta escribir "Hola".');
       }
+      return;
+    }
+  }
+
+  /**
+   * Flujo de Alta Conversacional de Nuevo Proveedor (WhatsApp)
+   */
+  private async startSupplierRegistration(tenantUser: any, rawFrom: string): Promise<void> {
+    const cleanPhone = tenantUser.phoneNumber;
+    await prisma.conversationSession.upsert({
+      where: { phoneNumber: cleanPhone },
+      update: {
+        state: 'SUPPLIER_REG_NAME',
+        contextData: { tenantId: tenantUser.tenantId },
+      },
+      create: {
+        phoneNumber: cleanPhone,
+        state: 'SUPPLIER_REG_NAME',
+        contextData: { tenantId: tenantUser.tenantId },
+      },
+    });
+
+    const msg = `📝 *Alta de Nuevo Proveedor*
+
+Vamos a registrar el proveedor paso a paso.
+Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
+
+    await wahaClient.sendText(rawFrom, msg);
+  }
+
+  private async handleSupplierRegistrationStep(
+    tenantUser: any,
+    session: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const ctx = (session.contextData as any) || {};
+
+    // Paso 1: Recibe Nombre -> Pide Rubro/Categoría
+    if (session.state === 'SUPPLIER_REG_NAME') {
+      const businessName = text.trim();
+      if (!businessName) {
+        await wahaClient.sendText(rawFrom, '⚠️ El nombre no puede estar vacío. Por favor escribe el nombre o razón social:');
+        return;
+      }
+
+      ctx.businessName = businessName;
+
+      // Obtener categorías existentes del Tenant
+      const categories = await prisma.category.findMany({
+        where: { tenantId: tenantUser.tenantId },
+        orderBy: { name: 'asc' },
+      });
+
+      let categoryPrompt = `👍 *Nombre:* ${businessName}\n\n🏷️ *Rubro o Categoría (Obligatorio):*\n`;
+      if (categories.length > 0) {
+        categoryPrompt += `Puedes elegir una de tus categorías existentes o escribir una nueva:\n`;
+        categories.forEach((c, idx) => {
+          categoryPrompt += `• ${c.name}\n`;
+        });
+      } else {
+        categoryPrompt += `Escribe el rubro o categoría comercial (ej: Ferretería, Insumos, Alimentos, etc.):\n`;
+      }
+      categoryPrompt += `\n_Escribe el nombre del rubro:_`;
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'SUPPLIER_REG_CATEGORY',
+          contextData: ctx,
+        },
+      });
+
+      await wahaClient.sendText(rawFrom, categoryPrompt);
+      return;
+    }
+
+    // Paso 2: Recibe Rubro -> Pide Teléfono (Obligatorio)
+    if (session.state === 'SUPPLIER_REG_CATEGORY') {
+      const categoryName = text.trim();
+      if (!categoryName) {
+        await wahaClient.sendText(rawFrom, '⚠️ El rubro es obligatorio. Por favor ingresa el nombre de la categoría:');
+        return;
+      }
+
+      // Buscar o crear la categoría
+      let category = await prisma.category.findFirst({
+        where: {
+          tenantId: tenantUser.tenantId,
+          name: { equals: categoryName, mode: 'insensitive' },
+        },
+      });
+
+      if (!category) {
+        category = await prisma.category.create({
+          data: {
+            tenantId: tenantUser.tenantId,
+            name: categoryName,
+          },
+        });
+      }
+
+      ctx.categoryId = category.id;
+      ctx.categoryName = category.name;
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'SUPPLIER_REG_PHONE',
+          contextData: ctx,
+        },
+      });
+
+      const phonePrompt = `🏷️ *Rubro asignado:* ${category.name}\n\n📱 *Teléfono de Contacto (Obligatorio):*\nIngresa el número de WhatsApp o teléfono del proveedor:`;
+      await wahaClient.sendText(rawFrom, phonePrompt);
+      return;
+    }
+
+    // Paso 3: Recibe Teléfono -> Pide CUIT / Datos Bancarios Opcionales
+    if (session.state === 'SUPPLIER_REG_PHONE') {
+      const cleanInputPhone = text.replace(/\D/g, '');
+      if (cleanInputPhone.length < 8) {
+        await wahaClient.sendText(rawFrom, '⚠️ Por favor ingresa un número de teléfono válido:');
+        return;
+      }
+
+      ctx.phone = text.trim();
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'SUPPLIER_REG_OPTIONAL',
+          contextData: ctx,
+        },
+      });
+
+      const optionalPrompt = `📱 *Teléfono:* ${ctx.phone}\n\n🏦 *Datos Opcionales (CUIT / CBU / Alias):*\nSi tienes el CUIT o datos bancarios para transferirle, escríbelos ahora (ej: "CUIT 30-12345678-9, Alias PROVEEDOR.PAGOS").\n\nSi es un proveedor informal sin estos datos, responde *Omitir*.`;
+      await wahaClient.sendText(rawFrom, optionalPrompt);
+      return;
+    }
+
+    // Paso 4: Recibe Datos Opcionales o "Omitir" -> Crea Proveedor en DB
+    if (session.state === 'SUPPLIER_REG_OPTIONAL') {
+      const lower = text.toLowerCase();
+      let cuit: string | null = null;
+      let alias: string | null = null;
+      let cbu: string | null = null;
+
+      if (!lower.includes('omitir') && !lower.includes('no') && !lower.includes('ninguno')) {
+        // Intentar detectar CUIT si viene en el texto
+        const cuitMatch = text.match(/\b\d{2}[-]?\d{8}[-]?\d{1}\b/);
+        if (cuitMatch) {
+          cuit = cuitMatch[0];
+        }
+
+        // Detectar alias si contiene palabras tipo ALIAS
+        const aliasMatch = text.match(/alias[:\s]+([a-zA-Z0-9.\-_]+)/i);
+        if (aliasMatch) {
+          alias = aliasMatch[1];
+        }
+
+        // Detectar CBU/CVU de 22 dígitos
+        const cbuMatch = text.match(/\b\d{22}\b/);
+        if (cbuMatch) {
+          cbu = cbuMatch[0];
+        }
+      }
+
+      // Crear proveedor en PostgreSQL
+      const supplier = await prisma.supplier.create({
+        data: {
+          tenantId: tenantUser.tenantId,
+          categoryId: ctx.categoryId,
+          businessName: ctx.businessName,
+          phone: ctx.phone,
+          cuit: cuit,
+          bankAccounts: (alias || cbu) ? {
+            create: {
+              alias: alias,
+              cbuCvu: cbu,
+            },
+          } : undefined,
+        },
+        include: {
+          category: true,
+          bankAccounts: true,
+        },
+      });
+
+      // Limpiar sesión conversacional
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+
+      const finalMsg = `🎉 *¡Proveedor Registrado Exitosamente!*
+
+🏢 *Nombre:* ${supplier.businessName}
+🏷️ *Rubro:* ${supplier.category.name}
+📱 *Teléfono:* ${supplier.phone}
+🆔 *CUIT:* ${supplier.cuit || '_No informado (informal)_'}
+🏦 *Datos de Pago:* ${alias ? `Alias: ${alias}` : cbu ? `CBU: ${cbu}` : '_No informados_'}
+
+Ya puedes asociarle facturas y registrar pagos para este proveedor.`;
+
+      await wahaClient.sendText(rawFrom, finalMsg);
       return;
     }
   }
@@ -238,22 +462,41 @@ Pruébalo ahora mismo: *envía una foto o PDF de una factura de un proveedor* y 
       // 2. Extraer información con Gemini Vision
       const extracted = await invoiceExtractorService.extractFromBuffer(buffer, mimeType);
 
-      // 3. Buscar o dar de alta al Proveedor
+      // 3. Buscar o crear la categoría
+      const categoryName = extracted.rubroSugerido || 'General';
+      let category = await prisma.category.findFirst({
+        where: {
+          tenantId: tenantUser.tenantId,
+          name: { equals: categoryName, mode: 'insensitive' },
+        },
+      });
+
+      if (!category) {
+        category = await prisma.category.create({
+          data: {
+            tenantId: tenantUser.tenantId,
+            name: categoryName,
+          },
+        });
+      }
+
+      // 4. Buscar o dar de alta al Proveedor
       let supplier = await prisma.supplier.findFirst({
         where: {
           tenantId: tenantUser.tenantId,
           cuit: extracted.cuitEmisor,
         },
-        include: { bankAccounts: true },
+        include: { category: true, bankAccounts: true },
       });
 
       if (!supplier) {
         supplier = await prisma.supplier.create({
           data: {
             tenantId: tenantUser.tenantId,
+            categoryId: category.id,
             cuit: extracted.cuitEmisor,
             businessName: extracted.razonSocial,
-            categories: extracted.rubroSugerido || 'General',
+            phone: 'Sin teléfono registrado',
             bankAccounts: {
               create: {
                 cbuCvu: extracted.cbuCvu,
@@ -262,7 +505,7 @@ Pruébalo ahora mismo: *envía una foto o PDF de una factura de un proveedor* y 
               },
             },
           },
-          include: { bankAccounts: true },
+          include: { category: true, bankAccounts: true },
         });
       } else if ((extracted.cbuCvu || extracted.alias) && supplier.bankAccounts.length === 0) {
         // Actualizar datos bancarios si antes no los tenía
@@ -276,12 +519,12 @@ Pruébalo ahora mismo: *envía una foto o PDF de una factura de un proveedor* y 
         });
       }
 
-      // 4. Calcular fecha en la grilla semanal
+      // 5. Calcular fecha en la grilla semanal
       const dueDate = new Date(extracted.fechaVencimiento);
       const configuredDays = tenantUser.tenant.paymentGridConfig?.paymentDays || 'MARTES,JUEVES';
       const scheduledDate = paymentGridService.calculateScheduledDate(dueDate, configuredDays);
 
-      // 5. Registrar la factura en la base de datos
+      // 6. Registrar la factura en la base de datos
       const invoice = await prisma.invoice.create({
         data: {
           tenantId: tenantUser.tenantId,
@@ -300,7 +543,7 @@ Pruébalo ahora mismo: *envía una foto o PDF de una factura de un proveedor* y 
 
       await wahaClient.stopTyping(rawFrom);
 
-      // 6. Enviar confirmación interactiva
+      // 7. Enviar confirmación interactiva
       const formattedAmount = new Intl.NumberFormat('es-AR', {
         style: 'currency',
         currency: 'ARS',
@@ -311,7 +554,7 @@ Pruébalo ahora mismo: *envía una foto o PDF de una factura de un proveedor* y 
       const confirmText = `📄 *Comprobante Procesado Exitosamente*
 
 🏢 *Proveedor:* ${extracted.razonSocial} (CUIT: ${extracted.cuitEmisor})
-🏷️ *Rubro:* ${supplier.categories}
+🏷️ *Rubro:* ${supplier.category?.name || category.name}
 🧾 *Comprobante:* ${extracted.tipoComprobante} Nº ${extracted.numeroComprobante}
 💰 *Total:* ${formattedAmount}
 ⏰ *Vencimiento:* ${extracted.fechaVencimiento}
@@ -340,7 +583,28 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
   private async handleRegisteredUserText(tenantUser: any, rawFrom: string, text: string): Promise<void> {
     const lower = text.toLowerCase();
 
-    // Ver pagos de hoy o de la semana
+    // 1. Detección de intención para alta de proveedor
+    const hasNuevo = lower.includes('nuevo') || lower.includes('nueva');
+    const hasProveedor = lower.includes('proveedor');
+
+    if (hasNuevo && hasProveedor) {
+      await this.startSupplierRegistration(tenantUser, rawFrom);
+      return;
+    }
+
+    // 2. Manejo de ambigüedad si menciona proveedor con intenciones de alta sin ambas palabras
+    if (
+      hasProveedor &&
+      (lower.includes('alta') || lower.includes('crear') || lower.includes('registrar') || lower.includes('agregar'))
+    ) {
+      const ambiguityMsg = `Entiendo que quieres registrar un nuevo proveedor. Puedes hacerlo de esta manera:
+• "Quiero dar de alta un nuevo proveedor"
+• "Registrar nuevo proveedor"`;
+      await wahaClient.sendText(rawFrom, ambiguityMsg);
+      return;
+    }
+
+    // 3. Ver pagos de hoy o de la semana
     if (lower.includes('pagos') || lower.includes('hoy') || lower.includes('grilla')) {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -359,7 +623,7 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
         },
         include: {
           supplier: {
-            include: { bankAccounts: true },
+            include: { category: true, bankAccounts: true },
           },
         },
         orderBy: { scheduledPaymentDate: 'asc' },
@@ -380,7 +644,7 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
         const bank = inv.supplier.bankAccounts[0];
         const bankStr = bank?.alias ? `Alias: ${bank.alias}` : bank?.cbuCvu ? `CBU: ${bank.cbuCvu}` : 'Sin datos';
 
-        report += `${index + 1}️⃣ *${inv.supplier.businessName}* (${inv.supplier.categories})\n`;
+        report += `${index + 1}️⃣ *${inv.supplier.businessName}* (${inv.supplier.category.name})\n`;
         report += `   💵 $ ${amt.toLocaleString('es-AR')} — 📅 ${dateStr}\n`;
         report += `   🏦 ${bankStr} — Nº ${inv.invoiceNumber}\n\n`;
       });
@@ -390,8 +654,8 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       return;
     }
 
-    // Consultas de IA / Insights (Plan Ultra)
-    if (lower.includes('insight') || lower.includes('cuanto') || lower.includes('analisis') || lower.includes('proveedor')) {
+    // 4. Consultas de IA / Insights (Plan Ultra)
+    if (lower.includes('insight') || lower.includes('cuanto') || lower.includes('analisis') || lower.includes('proveedores')) {
       if (tenantUser.tenant.planType !== 'ULTRA') {
         await wahaClient.sendText(
           rawFrom,
@@ -402,15 +666,16 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
 
       await wahaClient.startTyping(rawFrom);
 
-      // Traer resumen de facturas y proveedores
+      // Traer resumen de facturas y proveedores con su categoría
       const suppliers = await prisma.supplier.findMany({
         where: { tenantId: tenantUser.tenantId },
-        include: { invoices: true },
+        include: { category: true, invoices: true },
       });
 
       const summaryData = suppliers.map((s) => ({
         proveedor: s.businessName,
-        rubro: s.categories,
+        rubro: s.category.name,
+        telefono: s.phone,
         totalFacturas: s.invoices.length,
         montoTotalHistorico: s.invoices.reduce((acc, i) => acc + Number(i.amount), 0),
         facturasPendientes: s.invoices.filter((i) => i.status === 'EN_GRILLA').length,
@@ -427,6 +692,7 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
 
 Puedes interactuar con el sistema de las siguientes formas:
 📸 *Envía una foto o PDF:* Carga automática de factura y proveedor.
+📝 *Escribe "Registrar nuevo proveedor":* Alta manual guiada de proveedores formales o informales.
 📋 *Escribe "pagos":* Ver grilla de pagos de los próximos 7 días.
 ${tenantUser.tenant.planType === 'ULTRA' ? '🤖 *Haz preguntas financieras:* Ej. "¿Cuánto le pagamos este mes a cada rubro?"' : ''}
 🌐 *Dashboard Web:* Visualiza la grilla completa en tiempo real.`;
