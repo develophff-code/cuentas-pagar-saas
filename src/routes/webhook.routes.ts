@@ -8,15 +8,83 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
     return { status: 'ok', timestamp: new Date().toISOString() };
   });
 
-  // Receptor de Webhook de WAHA
+  // ==========================================
+  // Webhook para YCloud (WhatsApp Cloud API)
+  // ==========================================
+  
+  // Verificación inicial del Webhook (GET) si YCloud o Meta lo requieren
+  fastify.get('/api/webhook/ycloud', async (request, reply) => {
+    const query: any = request.query;
+    const challenge = query['hub.challenge'] || query['challenge'];
+    if (challenge) {
+      return reply.status(200).send(challenge);
+    }
+    return reply.status(200).send({ status: 'active', provider: 'ycloud' });
+  });
+
+  // Recepción de eventos entrantes de YCloud (POST)
+  fastify.post('/api/webhook/ycloud', async (request, reply) => {
+    const body: any = request.body;
+
+    // YCloud envía eventos con tipo 'whatsapp.inbound_message.received'
+    // o el objeto whatsappInboundMessage directamente
+    const inboundMsg = body?.whatsappInboundMessage || body;
+
+    if (inboundMsg && (inboundMsg.from || inboundMsg.type)) {
+      const msgType = inboundMsg.type;
+      let textBody = '';
+      let hasMedia = false;
+      let media: any = null;
+
+      if (msgType === 'text') {
+        textBody = inboundMsg.text?.body || '';
+      } else if (msgType === 'interactive') {
+        // Respuestas a botones interactivos
+        textBody = inboundMsg.interactive?.button_reply?.id || inboundMsg.interactive?.button_reply?.title || '';
+      } else if (msgType === 'image') {
+        hasMedia = true;
+        media = {
+          url: inboundMsg.image?.link || inboundMsg.image?.id,
+          mimetype: inboundMsg.image?.mime_type || 'image/jpeg',
+          filename: 'factura_recibida.jpg',
+        };
+        textBody = inboundMsg.image?.caption || '';
+      } else if (msgType === 'document') {
+        hasMedia = true;
+        media = {
+          url: inboundMsg.document?.link || inboundMsg.document?.id,
+          mimetype: inboundMsg.document?.mime_type || 'application/pdf',
+          filename: inboundMsg.document?.filename || 'factura_recibida.pdf',
+        };
+        textBody = inboundMsg.document?.caption || '';
+      }
+
+      if (inboundMsg.from) {
+        botService.handleIncomingMessage({
+          id: inboundMsg.id || `ycloud_${Date.now()}`,
+          from: inboundMsg.from,
+          body: textBody,
+          hasMedia,
+          media,
+          _data: inboundMsg,
+        }).catch((err) => {
+          fastify.log.error(err, '[Webhook YCloud] Error procesando mensaje de WhatsApp');
+        });
+      }
+    }
+
+    return reply.status(200).send({ received: true });
+  });
+
+  // ==========================================
+  // Webhook para WAHA (Fallback / Autoalojado)
+  // ==========================================
   fastify.post('/api/webhook/whatsapp', async (request, reply) => {
     const body: any = request.body;
 
-    // WAHA emite eventos como 'message' o 'message.any'
     if (body?.event === 'message' || body?.event === 'message.any') {
       const payload = body.payload;
       if (payload && !payload.fromMe) {
-        // Ejecución en segundo plano para responder de inmediato 200 OK al webhook
         botService.handleIncomingMessage({
           id: payload.id,
           from: payload.from,
@@ -25,7 +93,7 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
           media: payload.media,
           _data: payload,
         }).catch((err) => {
-          fastify.log.error(err, '[Webhook] Error procesando mensaje de WhatsApp');
+          fastify.log.error(err, '[Webhook WAHA] Error procesando mensaje de WhatsApp');
         });
       }
     }
@@ -33,7 +101,10 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
     return reply.status(200).send({ received: true });
   });
 
-  // Endpoints para el Dashboard Web
+  // ==========================================
+  // Endpoints REST para el Dashboard Web
+  // ==========================================
+
   // 1. Grilla de pagos de un tenant
   fastify.get('/api/tenants/:tenantId/grid', async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };

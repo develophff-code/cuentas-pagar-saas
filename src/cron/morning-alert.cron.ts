@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { prisma } from '../lib/prisma.js';
-import { wahaClient } from '../modules/waha/waha.client.js';
+import { whatsappService } from '../modules/whatsapp/whatsapp.service.js';
 
 export function setupMorningAlertCron(): void {
   // Se ejecuta todos los días a las 08:00 AM (hora del servidor)
@@ -63,7 +63,7 @@ export async function runMorningPaymentNotifications(): Promise<void> {
       // Enviar a todos los celulares autorizados de la empresa
       for (const user of tenant.users) {
         try {
-          await wahaClient.sendText(user.phoneNumber, body);
+          await whatsappService.sendText(user.phoneNumber, body);
         } catch (err: any) {
           console.error(`[Cron] Error enviando alerta a ${user.phoneNumber}:`, err.message);
         }

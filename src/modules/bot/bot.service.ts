@@ -1,5 +1,5 @@
 import { prisma } from '../../lib/prisma.js';
-import { wahaClient } from '../waha/waha.client.js';
+import { whatsappService } from '../whatsapp/whatsapp.service.js';
 import { invoiceExtractorService } from '../extractor/invoice-extractor.service.js';
 import { paymentGridService } from '../payments/grid.service.js';
 
@@ -107,7 +107,7 @@ Automatiza la recepción de boletas y pagos a tus proveedores en segundos:
 
 _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
 
-      await wahaClient.sendButtons(rawFrom, welcomeMessage, [
+      await whatsappService.sendButtons(rawFrom, welcomeMessage, [
         { id: 'plan_basic', text: '1. Plan Básico' },
         { id: 'plan_pro', text: '2. Plan Profesional' },
         { id: 'plan_ultra', text: '3. Plan Ultra' },
@@ -140,7 +140,7 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
         maxSuppliers = 150;
         maxInvoices = 500;
       } else {
-        await wahaClient.sendText(rawFrom, 'Por favor, selecciona una opción válida: *1* (Básico), *2* (Profesional) o *3* (Ultra).');
+        await whatsappService.sendText(rawFrom, 'Por favor, selecciona una opción válida: *1* (Básico), *2* (Profesional) o *3* (Ultra).');
         return;
       }
 
@@ -152,7 +152,7 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
         },
       });
 
-      await wahaClient.sendText(
+      await whatsappService.sendText(
         rawFrom,
         `✅ Has seleccionado el *Plan ${chosenPlan}*.\n\nPara dar de alta tu empresa, por favor escribe el *CUIT* de tu empresa (ej: 30-12345678-9):`
       );
@@ -163,7 +163,7 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
     if (session.state === 'WAITING_COMPANY_CUIT') {
       const cleanCuit = text.replace(/\D/g, '');
       if (cleanCuit.length < 10 || cleanCuit.length > 11) {
-        await wahaClient.sendText(rawFrom, '⚠️ El CUIT no parece válido. Por favor ingresa los 11 dígitos de tu CUIT:');
+        await whatsappService.sendText(rawFrom, '⚠️ El CUIT no parece válido. Por favor ingresa los 11 dígitos de tu CUIT:');
         return;
       }
 
@@ -178,7 +178,7 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
         },
       });
 
-      await wahaClient.sendText(rawFrom, '👍 Perfecto. Ahora dinos la *Razón Social o Nombre de Fantasía* de tu empresa:');
+      await whatsappService.sendText(rawFrom, '👍 Perfecto. Ahora dinos la *Razón Social o Nombre de Fantasía* de tu empresa:');
       return;
     }
 
@@ -236,10 +236,10 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
 * Envía una foto o PDF de una factura de un proveedor.
 * O escribe *"Quiero dar de alta un nuevo proveedor"* para registrar proveedores manualmente.`;
 
-        await wahaClient.sendText(rawFrom, successMessage);
+        await whatsappService.sendText(rawFrom, successMessage);
       } catch (err: any) {
         console.error('[BotService] Error creando empresa:', err);
-        await wahaClient.sendText(rawFrom, 'Hubo un inconveniente creando la cuenta. Si ya estabas registrado, intenta escribir "Hola".');
+        await whatsappService.sendText(rawFrom, 'Hubo un inconveniente creando la cuenta. Si ya estabas registrado, intenta escribir "Hola".');
       }
       return;
     }
@@ -268,7 +268,7 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
 Vamos a registrar el proveedor paso a paso.
 Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
 
-    await wahaClient.sendText(rawFrom, msg);
+    await whatsappService.sendText(rawFrom, msg);
   }
 
   private async handleSupplierRegistrationStep(
@@ -283,7 +283,7 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
     if (session.state === 'SUPPLIER_REG_NAME') {
       const businessName = text.trim();
       if (!businessName) {
-        await wahaClient.sendText(rawFrom, '⚠️ El nombre no puede estar vacío. Por favor escribe el nombre o razón social:');
+        await whatsappService.sendText(rawFrom, '⚠️ El nombre no puede estar vacío. Por favor escribe el nombre o razón social:');
         return;
       }
 
@@ -314,7 +314,7 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
         },
       });
 
-      await wahaClient.sendText(rawFrom, categoryPrompt);
+      await whatsappService.sendText(rawFrom, categoryPrompt);
       return;
     }
 
@@ -322,7 +322,7 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
     if (session.state === 'SUPPLIER_REG_CATEGORY') {
       const categoryName = text.trim();
       if (!categoryName) {
-        await wahaClient.sendText(rawFrom, '⚠️ El rubro es obligatorio. Por favor ingresa el nombre de la categoría:');
+        await whatsappService.sendText(rawFrom, '⚠️ El rubro es obligatorio. Por favor ingresa el nombre de la categoría:');
         return;
       }
 
@@ -355,7 +355,7 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
       });
 
       const phonePrompt = `🏷️ *Rubro asignado:* ${category.name}\n\n📱 *Teléfono de Contacto (Obligatorio):*\nIngresa el número de WhatsApp o teléfono del proveedor:`;
-      await wahaClient.sendText(rawFrom, phonePrompt);
+      await whatsappService.sendText(rawFrom, phonePrompt);
       return;
     }
 
@@ -363,7 +363,7 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
     if (session.state === 'SUPPLIER_REG_PHONE') {
       const cleanInputPhone = text.replace(/\D/g, '');
       if (cleanInputPhone.length < 8) {
-        await wahaClient.sendText(rawFrom, '⚠️ Por favor ingresa un número de teléfono válido:');
+        await whatsappService.sendText(rawFrom, '⚠️ Por favor ingresa un número de teléfono válido:');
         return;
       }
 
@@ -378,7 +378,7 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
       });
 
       const optionalPrompt = `📱 *Teléfono:* ${ctx.phone}\n\n🏦 *Datos Opcionales (CUIT / CBU / Alias):*\nSi tienes el CUIT o datos bancarios para transferirle, escríbelos ahora (ej: "CUIT 30-12345678-9, Alias PROVEEDOR.PAGOS").\n\nSi es un proveedor informal sin estos datos, responde *Omitir*.`;
-      await wahaClient.sendText(rawFrom, optionalPrompt);
+      await whatsappService.sendText(rawFrom, optionalPrompt);
       return;
     }
 
@@ -443,7 +443,7 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
 
 Ya puedes asociarle facturas y registrar pagos para este proveedor.`;
 
-      await wahaClient.sendText(rawFrom, finalMsg);
+      await whatsappService.sendText(rawFrom, finalMsg);
       return;
     }
   }
@@ -452,12 +452,12 @@ Ya puedes asociarle facturas y registrar pagos para este proveedor.`;
    * Procesa la recepción de una foto o PDF de factura
    */
   private async handleMediaInvoice(tenantUser: any, rawFrom: string, media: any): Promise<void> {
-    await wahaClient.startTyping(rawFrom);
-    await wahaClient.sendText(rawFrom, '⏳ *Descargando y analizando tu comprobante con IA...* Dame unos segundos.');
+    await whatsappService.startTyping(rawFrom);
+    await whatsappService.sendText(rawFrom, '⏳ *Descargando y analizando tu comprobante con IA...* Dame unos segundos.');
 
     try {
       // 1. Descargar archivo multimedia
-      const { buffer, mimeType } = await wahaClient.downloadMedia(media.url);
+      const { buffer, mimeType } = await whatsappService.downloadMedia(media.url);
 
       // 2. Extraer información con Gemini Vision
       const extracted = await invoiceExtractorService.extractFromBuffer(buffer, mimeType);
@@ -541,7 +541,7 @@ Ya puedes asociarle facturas y registrar pagos para este proveedor.`;
         },
       });
 
-      await wahaClient.stopTyping(rawFrom);
+      await whatsappService.stopTyping(rawFrom);
 
       // 7. Enviar confirmación interactiva
       const formattedAmount = new Intl.NumberFormat('es-AR', {
@@ -563,14 +563,14 @@ Ya puedes asociarle facturas y registrar pagos para este proveedor.`;
 
 _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
 
-      await wahaClient.sendButtons(rawFrom, confirmText, [
+      await whatsappService.sendButtons(rawFrom, confirmText, [
         { id: `posponer_${invoice.id}`, text: 'Posponer 1 Semana' },
         { id: `pagar_hoy_${invoice.id}`, text: 'Pagar Hoy' },
       ]);
     } catch (error: any) {
-      await wahaClient.stopTyping(rawFrom);
+      await whatsappService.stopTyping(rawFrom);
       console.error('[BotService] Error procesando factura:', error);
-      await wahaClient.sendText(
+      await whatsappService.sendText(
         rawFrom,
         `❌ No pudimos procesar la factura automáticamente: ${error.message}.\nPor favor intenta enviar una foto más nítida o en formato PDF.`
       );
@@ -600,7 +600,7 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       const ambiguityMsg = `Entiendo que quieres registrar un nuevo proveedor. Puedes hacerlo de esta manera:
 • "Quiero dar de alta un nuevo proveedor"
 • "Registrar nuevo proveedor"`;
-      await wahaClient.sendText(rawFrom, ambiguityMsg);
+      await whatsappService.sendText(rawFrom, ambiguityMsg);
       return;
     }
 
@@ -630,7 +630,7 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       });
 
       if (invoices.length === 0) {
-        await wahaClient.sendText(rawFrom, '🎉 *No tienes pagos programados para los próximos 7 días.*');
+        await whatsappService.sendText(rawFrom, '🎉 *No tienes pagos programados para los próximos 7 días.*');
         return;
       }
 
@@ -650,21 +650,21 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       });
 
       report += `*Total a Pagar:* $ ${totalSum.toLocaleString('es-AR')}`;
-      await wahaClient.sendText(rawFrom, report);
+      await whatsappService.sendText(rawFrom, report);
       return;
     }
 
     // 4. Consultas de IA / Insights (Plan Ultra)
     if (lower.includes('insight') || lower.includes('cuanto') || lower.includes('analisis') || lower.includes('proveedores')) {
       if (tenantUser.tenant.planType !== 'ULTRA') {
-        await wahaClient.sendText(
+        await whatsappService.sendText(
           rawFrom,
           '💡 *Esta consulta requiere el Plan Ultra.* Con el Plan Ultra puedes consultar insights financieros con IA sobre proveedores, gastos por rubro y proyecciones.'
         );
         return;
       }
 
-      await wahaClient.startTyping(rawFrom);
+      await whatsappService.startTyping(rawFrom);
 
       // Traer resumen de facturas y proveedores con su categoría
       const suppliers = await prisma.supplier.findMany({
@@ -682,8 +682,8 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       }));
 
       const aiResponse = await invoiceExtractorService.generateSupplierInsights(summaryData, text);
-      await wahaClient.stopTyping(rawFrom);
-      await wahaClient.sendText(rawFrom, aiResponse);
+      await whatsappService.stopTyping(rawFrom);
+      await whatsappService.sendText(rawFrom, aiResponse);
       return;
     }
 
@@ -697,7 +697,7 @@ Puedes interactuar con el sistema de las siguientes formas:
 ${tenantUser.tenant.planType === 'ULTRA' ? '🤖 *Haz preguntas financieras:* Ej. "¿Cuánto le pagamos este mes a cada rubro?"' : ''}
 🌐 *Dashboard Web:* Visualiza la grilla completa en tiempo real.`;
 
-    await wahaClient.sendText(rawFrom, helpMessage);
+    await whatsappService.sendText(rawFrom, helpMessage);
   }
 }
 
