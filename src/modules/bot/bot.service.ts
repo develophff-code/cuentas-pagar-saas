@@ -5,7 +5,7 @@ import { paymentGridService } from '../payments/grid.service.js';
 
 export interface IncomingWahaMessage {
   id: string;
-  from: string; // ej: "54911xxxxxxxx@c.us"
+  from: string; // ej: "54911xxxxxxxx@c.us" o "+54911xxxxxxxx"
   body?: string;
   hasMedia?: boolean;
   media?: {
@@ -18,7 +18,7 @@ export interface IncomingWahaMessage {
 
 export class BotService {
   /**
-   * Manejador principal de mensajes entrantes desde el webhook de WAHA
+   * Manejador principal de mensajes entrantes desde el webhook
    */
   async handleIncomingMessage(msg: IncomingWahaMessage): Promise<void> {
     const rawFrom = msg.from;
@@ -37,6 +37,9 @@ export class BotService {
       include: {
         tenant: {
           include: {
+            plan: {
+              include: { prices: true },
+            },
             paymentGridConfig: true,
           },
         },
@@ -49,19 +52,61 @@ export class BotService {
       return;
     }
 
+    // Validación de período de prueba de 7 días y estado de suscripción
+    const isTrial = tenantUser.tenant.subscriptionStatus === 'TRIAL';
+    const isTrialExpired = isTrial && new Date() > new Date(tenantUser.tenant.trialEndsAt);
+    const isPastDue = tenantUser.tenant.subscriptionStatus === 'PAST_DUE';
+
+    if (isTrialExpired || isPastDue) {
+      if (isTrialExpired && !isPastDue) {
+        await prisma.tenant.update({
+          where: { id: tenantUser.tenantId },
+          data: { subscriptionStatus: 'PAST_DUE' },
+        });
+      }
+
+      const now = new Date();
+      const currentPrice = tenantUser.tenant.plan?.prices.find(
+        (p) => new Date(p.validFrom) <= now && (!p.validTo || new Date(p.validTo) >= now)
+      );
+      const priceStr = currentPrice ? `$ ${Number(currentPrice.amount).toLocaleString('es-AR')}` : '';
+
+      const paywallMsg = `🔒 *Tu período de prueba gratuita de 7 días ha finalizado.*
+
+Para continuar automatizando tus facturas y acceder a la grilla de pagos de tu *${tenantUser.tenant.plan?.name}* (${priceStr}/mes), activa tu suscripción:
+
+👉 *Enlace de Pago Seguro (Mercado Pago):*
+https://www.mercadopago.com.ar/subscriptions/checkout?pref_id=suscripcion_${tenantUser.tenant.id}
+
+_Apenas se registre el pago, tu cuenta se reactivará de forma inmediata._`;
+
+      await whatsappService.sendText(rawFrom, paywallMsg);
+      return;
+    }
+
     // 2. Si es un usuario registrado y envió un archivo multimedia (Foto o PDF)
     if (msg.hasMedia && msg.media?.url) {
       await this.handleMediaInvoice(tenantUser, rawFrom, msg.media);
       return;
     }
 
-    // 3. Comprobar si el usuario registrado está en medio de un flujo de alta de proveedor
+    // 3. Comprobar si el usuario registrado está en medio de un flujo activo
     const activeSession = await prisma.conversationSession.findUnique({
       where: { phoneNumber: cleanPhone },
     });
 
     if (activeSession && activeSession.state.startsWith('SUPPLIER_REG_')) {
       await this.handleSupplierRegistrationStep(tenantUser, activeSession, rawFrom, text);
+      return;
+    }
+
+    if (activeSession && activeSession.state.startsWith('INVOICE_REG_')) {
+      await this.handleManualInvoiceRegistrationStep(tenantUser, activeSession, rawFrom, text);
+      return;
+    }
+
+    if (activeSession && activeSession.state === 'WAITING_NEW_PAYMENT_DATE') {
+      await this.handleNewPaymentDateStep(tenantUser, activeSession, rawFrom, text);
       return;
     }
 
@@ -154,21 +199,34 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
 
       await whatsappService.sendText(
         rawFrom,
-        `✅ Has seleccionado el *Plan ${chosenPlan}*.\n\nPara dar de alta tu empresa, por favor escribe el *CUIT* de tu empresa (ej: 30-12345678-9):`
+        `✅ Has seleccionado el *Plan ${chosenPlan}*.\n\nPara dar de alta tu empresa, por favor escribe el *CUIT* de tu empresa (11 dígitos o con guiones ej: 20-12432936-2):`
       );
       return;
     }
 
-    // Ingreso de CUIT
+    // Ingreso y validación estricta de CUIT (11 dígitos numéricos o 13 con guiones)
     if (session.state === 'WAITING_COMPANY_CUIT') {
-      const cleanCuit = text.replace(/\D/g, '');
-      if (cleanCuit.length < 10 || cleanCuit.length > 11) {
-        await whatsappService.sendText(rawFrom, '⚠️ El CUIT no parece válido. Por favor ingresa los 11 dígitos de tu CUIT:');
+      const rawText = text.trim();
+      const cleanCuit = rawText.replace(/\D/g, '');
+
+      const hasHyphens = rawText.includes('-');
+      const isValidWithHyphens = hasHyphens && /^\d{2}-\d{8}-\d{1}$/.test(rawText);
+      const isValidNumeric = !hasHyphens && /^\d{11}$/.test(cleanCuit);
+
+      if (!isValidWithHyphens && !isValidNumeric) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ *Formato de CUIT inválido.*\nEl CUIT debe tener exactamente *11 dígitos numéricos* (ej: 20124329362) o *13 caracteres con guiones* (ej: 20-12432936-2).\n\nPor favor, escríbelo nuevamente:'
+        );
         return;
       }
 
+      const formattedCuit = isValidWithHyphens
+        ? rawText
+        : `${cleanCuit.slice(0, 2)}-${cleanCuit.slice(2, 10)}-${cleanCuit.slice(10)}`;
+
       const ctx = (session.contextData as any) || {};
-      ctx.cuit = text.trim();
+      ctx.cuit = formattedCuit;
 
       await prisma.conversationSession.update({
         where: { id: session.id },
@@ -188,25 +246,25 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
       const ctx = (session.contextData as any) || {};
 
       try {
-        // Crear Tenant, Categorías iniciales y TenantUser
+        // Buscar el plan seleccionado en la base de datos
+        const planCode = (ctx.chosenPlan || 'BASIC') as any;
+        const plan = await prisma.plan.findUnique({
+          where: { code: planCode },
+        });
+
+        // 7 días de prueba gratuita
+        const trialDays = 7;
+        const trialEndsAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
+        const friendlyTrialDate = trialEndsAt.toLocaleDateString('es-AR');
+
+        // Crear Tenant y TenantUser
         const tenant = await prisma.tenant.create({
           data: {
             cuit: ctx.cuit || '00-00000000-0',
             businessName: companyName,
-            planType: ctx.chosenPlan || 'BASIC',
-            maxUsers: ctx.maxUsers || 1,
-            maxSuppliers: ctx.maxSuppliers || 25,
-            maxInvoices: ctx.maxInvoices || 100,
-            categories: {
-              createMany: {
-                data: [
-                  { name: 'General' },
-                  { name: 'Insumos y Oficina' },
-                  { name: 'Materia Prima' },
-                  { name: 'Servicios' },
-                ],
-              },
-            },
+            planId: plan ? plan.id : undefined,
+            subscriptionStatus: 'TRIAL',
+            trialEndsAt: trialEndsAt,
             paymentGridConfig: {
               create: {
                 paymentDays: 'MARTES,JUEVES',
@@ -225,16 +283,21 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
 
         await prisma.conversationSession.delete({ where: { id: session.id } });
 
+        const planName = plan ? plan.name : `Plan ${planCode}`;
+        const maxPhones = plan ? plan.maxUsers : 1;
+
         const successMessage = `🎉 *¡Felicitaciones! Tu cuenta para ${companyName} ha sido creada con éxito.*
 
 *Configuración Inicial:*
 * CUIT: ${tenant.cuit}
-* Plan: ${tenant.planType} (Permite hasta ${tenant.maxUsers} celulares)
+* Plan: ${planName} (Permite hasta ${maxPhones} celulares)
+* 🎁 *Prueba Gratuita:* 7 días activos hasta el *${friendlyTrialDate}*
 * Días de pago fijados: *Martes y Jueves*
 
 🚀 *¡Ya puedes empezar!*
-* Envía una foto o PDF de una factura de un proveedor.
-* O escribe *"Quiero dar de alta un nuevo proveedor"* para registrar proveedores manualmente.`;
+* 📸 *Envía una foto o PDF:* Carga automática con IA.
+* 📝 *Escribe "Cargar factura":* Registro manual si no tienes comprobante digital.
+* 👥 *Escribe "Registrar nuevo proveedor":* Alta manual de proveedores.`;
 
         await whatsappService.sendText(rawFrom, successMessage);
       } catch (err: any) {
@@ -289,16 +352,18 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
 
       ctx.businessName = businessName;
 
-      // Obtener categorías existentes del Tenant
+      // Obtener categorías existentes (globales del catálogo o propias de la empresa)
       const categories = await prisma.category.findMany({
-        where: { tenantId: tenantUser.tenantId },
+        where: {
+          OR: [{ tenantId: null }, { tenantId: tenantUser.tenantId }],
+        },
         orderBy: { name: 'asc' },
       });
 
       let categoryPrompt = `👍 *Nombre:* ${businessName}\n\n🏷️ *Rubro o Categoría (Obligatorio):*\n`;
       if (categories.length > 0) {
         categoryPrompt += `Puedes elegir una de tus categorías existentes o escribir una nueva:\n`;
-        categories.forEach((c, idx) => {
+        categories.forEach((c) => {
           categoryPrompt += `• ${c.name}\n`;
         });
       } else {
@@ -329,8 +394,8 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
       // Buscar o crear la categoría
       let category = await prisma.category.findFirst({
         where: {
-          tenantId: tenantUser.tenantId,
           name: { equals: categoryName, mode: 'insensitive' },
+          OR: [{ tenantId: null }, { tenantId: tenantUser.tenantId }],
         },
       });
 
@@ -390,26 +455,22 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
       let cbu: string | null = null;
 
       if (!lower.includes('omitir') && !lower.includes('no') && !lower.includes('ninguno')) {
-        // Intentar detectar CUIT si viene en el texto
         const cuitMatch = text.match(/\b\d{2}[-]?\d{8}[-]?\d{1}\b/);
         if (cuitMatch) {
           cuit = cuitMatch[0];
         }
 
-        // Detectar alias si contiene palabras tipo ALIAS
         const aliasMatch = text.match(/alias[:\s]+([a-zA-Z0-9.\-_]+)/i);
         if (aliasMatch) {
           alias = aliasMatch[1];
         }
 
-        // Detectar CBU/CVU de 22 dígitos
         const cbuMatch = text.match(/\b\d{22}\b/);
         if (cbuMatch) {
           cbu = cbuMatch[0];
         }
       }
 
-      // Crear proveedor en PostgreSQL
       const supplier = await prisma.supplier.create({
         data: {
           tenantId: tenantUser.tenantId,
@@ -430,7 +491,6 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
         },
       });
 
-      // Limpiar sesión conversacional
       await prisma.conversationSession.delete({ where: { id: session.id } });
 
       const finalMsg = `🎉 *¡Proveedor Registrado Exitosamente!*
@@ -441,7 +501,7 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
 🆔 *CUIT:* ${supplier.cuit || '_No informado (informal)_'}
 🏦 *Datos de Pago:* ${alias ? `Alias: ${alias}` : cbu ? `CBU: ${cbu}` : '_No informados_'}
 
-Ya puedes asociarle facturas y registrar pagos para este proveedor.`;
+💡 *Siguiente paso:* Ya puedes cargarle una factura escribiendo *"Cargar factura"* o enviando una foto/PDF del comprobante.`;
 
       await whatsappService.sendText(rawFrom, finalMsg);
       return;
@@ -449,7 +509,246 @@ Ya puedes asociarle facturas y registrar pagos para este proveedor.`;
   }
 
   /**
-   * Procesa la recepción de una foto o PDF de factura
+   * Flujo de Carga Manual de Factura / Boleta (WhatsApp)
+   */
+  private async startManualInvoiceRegistration(tenantUser: any, rawFrom: string): Promise<void> {
+    const cleanPhone = tenantUser.phoneNumber;
+
+    // Buscar proveedores existentes de la empresa
+    const suppliers = await prisma.supplier.findMany({
+      where: { tenantId: tenantUser.tenantId },
+      include: { category: true },
+      orderBy: { businessName: 'asc' },
+    });
+
+    if (suppliers.length === 0) {
+      await whatsappService.sendText(
+        rawFrom,
+        `⚠️ *Aún no tienes proveedores registrados.*
+
+Para cargar una factura manual primero necesitas al menos un proveedor.
+Puedes darlo de alta escribiendo:
+👉 *"Quiero dar de alta un nuevo proveedor"*`
+      );
+      return;
+    }
+
+    let supplierPrompt = `📝 *Carga Manual de Factura*\n\nSelecciona el proveedor para esta factura:\n\n`;
+    suppliers.forEach((s, idx) => {
+      supplierPrompt += `${idx + 1}️⃣ *${s.businessName}* (${s.category.name})\n`;
+    });
+    supplierPrompt += `\n_Responde con el número de la lista o el nombre del proveedor:_`;
+
+    await prisma.conversationSession.upsert({
+      where: { phoneNumber: cleanPhone },
+      update: {
+        state: 'INVOICE_REG_SUPPLIER',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          suppliersList: suppliers.map((s) => ({ id: s.id, name: s.businessName })),
+        },
+      },
+      create: {
+        phoneNumber: cleanPhone,
+        state: 'INVOICE_REG_SUPPLIER',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          suppliersList: suppliers.map((s) => ({ id: s.id, name: s.businessName })),
+        },
+      },
+    });
+
+    await whatsappService.sendText(rawFrom, supplierPrompt);
+  }
+
+  private async handleManualInvoiceRegistrationStep(
+    tenantUser: any,
+    session: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const ctx = (session.contextData as any) || {};
+
+    // Paso 1: Selección de Proveedor -> Solicitar Monto
+    if (session.state === 'INVOICE_REG_SUPPLIER') {
+      const suppliersList = ctx.suppliersList || [];
+      const numSelection = parseInt(text.trim(), 10);
+      let selectedSupplier: any = null;
+
+      if (!isNaN(numSelection) && numSelection >= 1 && numSelection <= suppliersList.length) {
+        selectedSupplier = suppliersList[numSelection - 1];
+      } else {
+        selectedSupplier = suppliersList.find((s: any) =>
+          s.name.toLowerCase().includes(text.trim().toLowerCase())
+        );
+      }
+
+      if (!selectedSupplier) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ Proveedor no identificado. Por favor responde con el número de la lista o el nombre exacto:'
+        );
+        return;
+      }
+
+      ctx.supplierId = selectedSupplier.id;
+      ctx.supplierName = selectedSupplier.name;
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'INVOICE_REG_AMOUNT',
+          contextData: ctx,
+        },
+      });
+
+      const amountPrompt = `🏢 *Proveedor seleccionado:* ${selectedSupplier.name}\n\n💰 *Monto Total de la Factura:*\nPor favor ingresa el monto a pagar (ej: 6100 o 6100.50):`;
+      await whatsappService.sendText(rawFrom, amountPrompt);
+      return;
+    }
+
+    // Paso 2: Recibe Monto -> Solicitar Fecha de Vencimiento
+    if (session.state === 'INVOICE_REG_AMOUNT') {
+      const cleanNum = text.replace(/[^0-9.,]/g, '').replace(',', '.');
+      const amount = parseFloat(cleanNum);
+
+      if (isNaN(amount) || amount <= 0) {
+        await whatsappService.sendText(rawFrom, '⚠️ Monto inválido. Ingresa un número mayor a 0 (ej: 15400 o 6100.50):');
+        return;
+      }
+
+      ctx.amount = amount;
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'INVOICE_REG_DUE_DATE',
+          contextData: ctx,
+        },
+      });
+
+      const datePrompt = `💰 *Monto:* $ ${amount.toLocaleString('es-AR')}\n\n📅 *Fecha de Vencimiento:*\nIngresa la fecha de vencimiento (ej: 15/09/2026, o escribe "hoy", "mañana", "en 7 dias"):`;
+      await whatsappService.sendText(rawFrom, datePrompt);
+      return;
+    }
+
+    // Paso 3: Recibe Fecha de Vencimiento -> Solicitar Comprobante / Detalle
+    if (session.state === 'INVOICE_REG_DUE_DATE') {
+      const lower = text.toLowerCase().trim();
+      let dueDate = new Date();
+
+      if (lower.includes('hoy')) {
+        dueDate = new Date();
+      } else if (lower.includes('mañana')) {
+        dueDate = new Date();
+        dueDate.setDate(dueDate.getDate() + 1);
+      } else if (lower.match(/en\s+(\d+)\s+d/)) {
+        const days = parseInt(lower.match(/en\s+(\d+)\s+d/)![1], 10);
+        dueDate = new Date();
+        dueDate.setDate(dueDate.getDate() + days);
+      } else {
+        // Formatos DD/MM/AAAA o YYYY-MM-DD
+        const partsSlash = text.split('/');
+        if (partsSlash.length === 3) {
+          const dd = parseInt(partsSlash[0], 10);
+          const mm = parseInt(partsSlash[1], 10) - 1;
+          const yyyy = parseInt(partsSlash[2], 10);
+          dueDate = new Date(yyyy, mm, dd);
+        } else {
+          const parsed = new Date(text);
+          if (!isNaN(parsed.getTime())) {
+            dueDate = parsed;
+          }
+        }
+      }
+
+      if (isNaN(dueDate.getTime())) {
+        await whatsappService.sendText(rawFrom, '⚠️ Fecha no reconocida. Por favor ingresa en formato DD/MM/AAAA (ej: 15/09/2026):');
+        return;
+      }
+
+      ctx.dueDate = dueDate.toISOString();
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'INVOICE_REG_DETAILS',
+          contextData: ctx,
+        },
+      });
+
+      const detailsPrompt = `📅 *Vencimiento:* ${dueDate.toLocaleDateString('es-AR')}\n\n🧾 *Número de Comprobante o Detalle:*\nEscribe el número de factura o detalle (ej: 0002-00001578 o "Compra de insumos de limpieza").\n_O escribe *Omitir* si no tienes el número:_`;
+      await whatsappService.sendText(rawFrom, detailsPrompt);
+      return;
+    }
+
+    // Paso 4: Recibe Detalle -> Guarda Factura en la Grilla y Confirma
+    if (session.state === 'INVOICE_REG_DETAILS') {
+      const lower = text.toLowerCase().trim();
+      let invoiceNumber = 'S/N';
+      let notes: string | null = null;
+
+      if (!lower.includes('omitir') && !lower.includes('no')) {
+        invoiceNumber = text.trim();
+        notes = text.trim();
+      }
+
+      const dueDate = new Date(ctx.dueDate);
+      const configuredDays = tenantUser.tenant.paymentGridConfig?.paymentDays || 'MARTES,JUEVES';
+      const scheduledDate = paymentGridService.calculateScheduledDate(dueDate, configuredDays);
+
+      const invoice = await prisma.invoice.create({
+        data: {
+          tenantId: tenantUser.tenantId,
+          supplierId: ctx.supplierId,
+          invoiceNumber: invoiceNumber,
+          invoiceType: 'Manual',
+          amount: ctx.amount,
+          dueDate: dueDate,
+          scheduledPaymentDate: scheduledDate,
+          status: 'EN_GRILLA',
+          notes: notes,
+        },
+        include: {
+          supplier: {
+            include: { category: true, bankAccounts: true },
+          },
+        },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+
+      const formattedAmount = new Intl.NumberFormat('es-AR', {
+        style: 'currency',
+        currency: 'ARS',
+      }).format(ctx.amount);
+
+      const friendlyGridDate = paymentGridService.formatFriendlyDate(scheduledDate);
+      const bank = invoice.supplier.bankAccounts[0];
+      const bankStr = bank?.alias ? `Alias: ${bank.alias}` : bank?.cbuCvu ? `CBU: ${bank.cbuCvu}` : 'Sin datos';
+
+      const confirmMsg = `📄 *Factura Registrada con Éxito*
+
+🏢 *Proveedor:* ${invoice.supplier.businessName} (${invoice.supplier.category.name})
+🧾 *Comprobante:* ${invoice.invoiceNumber}
+💰 *Total:* ${formattedAmount}
+⏰ *Vencimiento:* ${dueDate.toLocaleDateString('es-AR')}
+📅 *Agendada para pago el:* *${friendlyGridDate}*
+🏦 *Datos de Pago:* ${bankStr}
+
+_Quedó incorporada a tu grilla de pagos._`;
+
+      await whatsappService.sendButtons(rawFrom, confirmMsg, [
+        { id: `cambiar_fecha_${invoice.id}`, text: '📅 Cambiar Fecha' },
+        { id: `posponer_${invoice.id}`, text: '⏰ Posponer 1 Sem.' },
+        { id: `pagar_hoy_${invoice.id}`, text: '⚡ Pagar Hoy' },
+      ]);
+      return;
+    }
+  }
+
+  /**
+   * Procesa la recepción de una foto o PDF de factura con IA
    */
   private async handleMediaInvoice(tenantUser: any, rawFrom: string, media: any): Promise<void> {
     await whatsappService.startTyping(rawFrom);
@@ -462,12 +761,12 @@ Ya puedes asociarle facturas y registrar pagos para este proveedor.`;
       // 2. Extraer información con Gemini Vision
       const extracted = await invoiceExtractorService.extractFromBuffer(buffer, mimeType);
 
-      // 3. Buscar o crear la categoría
+      // 3. Buscar o crear la categoría (priorizando catálogo global o propio de la empresa)
       const categoryName = extracted.rubroSugerido || 'General';
       let category = await prisma.category.findFirst({
         where: {
-          tenantId: tenantUser.tenantId,
           name: { equals: categoryName, mode: 'insensitive' },
+          OR: [{ tenantId: null }, { tenantId: tenantUser.tenantId }],
         },
       });
 
@@ -564,8 +863,9 @@ Ya puedes asociarle facturas y registrar pagos para este proveedor.`;
 _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
 
       await whatsappService.sendButtons(rawFrom, confirmText, [
-        { id: `posponer_${invoice.id}`, text: 'Posponer 1 Semana' },
-        { id: `pagar_hoy_${invoice.id}`, text: 'Pagar Hoy' },
+        { id: `cambiar_fecha_${invoice.id}`, text: '📅 Cambiar Fecha' },
+        { id: `posponer_${invoice.id}`, text: '⏰ Posponer 1 Sem.' },
+        { id: `pagar_hoy_${invoice.id}`, text: '⚡ Pagar Hoy' },
       ]);
     } catch (error: any) {
       await whatsappService.stopTyping(rawFrom);
@@ -581,18 +881,59 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
    * Comandos de texto y consultas para usuarios autenticados
    */
   private async handleRegisteredUserText(tenantUser: any, rawFrom: string, text: string): Promise<void> {
-    const lower = text.toLowerCase();
+    const lower = text.toLowerCase().trim();
 
-    // 1. Detección de intención para alta de proveedor
-    const hasNuevo = lower.includes('nuevo') || lower.includes('nueva');
-    const hasProveedor = lower.includes('proveedor');
+    // 0. Manejo de botones e intenciones de reprogramación de fecha de pago
+    if (
+      text.startsWith('cambiar_fecha_') ||
+      lower.includes('cambiar fecha') ||
+      lower.includes('otra fecha') ||
+      lower.includes('modificar fecha')
+    ) {
+      await this.initiateChangePaymentDate(tenantUser, rawFrom, text);
+      return;
+    }
+
+    if (
+      text.startsWith('posponer_') ||
+      lower.includes('posponer') ||
+      lower.includes('7 dias') ||
+      lower.includes('7 días') ||
+      lower.includes('1 semana') ||
+      lower.includes('una semana')
+    ) {
+      await this.handlePostponeInvoice(tenantUser, rawFrom, text);
+      return;
+    }
+
+    if (
+      text.startsWith('pagar_hoy_') ||
+      lower.includes('pagar hoy') ||
+      lower.includes('pago hoy')
+    ) {
+      await this.handlePayTodayInvoice(tenantUser, rawFrom, text);
+      return;
+    }
+
+    // 1. Atajo Menú 1: Carga Automática con Foto / PDF
+    if (lower === '1' || lower === '1.' || lower.includes('como subir') || lower.includes('cargar foto')) {
+      await whatsappService.sendText(
+        rawFrom,
+        '📸 *Carga Automática de Facturas y Proveedores:*\n\nSimplemente saca una foto con tu cámara a la factura o ticket (o adjunta un PDF) y envíalo a este chat.\n\nNuestra IA extraerá emisor, CUIT, montos, vencimiento y programará la fecha de pago en tu grilla semanal automáticamente.'
+      );
+      return;
+    }
+
+    // 2. Detección de intención para alta de proveedor
+    const hasNuevo = lower.includes('nuevo') || lower.includes('nueva') || lower === '2' || lower === '2.';
+    const hasProveedor = lower.includes('proveedor') || lower === '2' || lower === '2.';
 
     if (hasNuevo && hasProveedor) {
       await this.startSupplierRegistration(tenantUser, rawFrom);
       return;
     }
 
-    // 2. Manejo de ambigüedad si menciona proveedor con intenciones de alta sin ambas palabras
+    // 2.1 Manejo de ambigüedad si menciona proveedor con intenciones de alta sin ambas palabras
     if (
       hasProveedor &&
       (lower.includes('alta') || lower.includes('crear') || lower.includes('registrar') || lower.includes('agregar'))
@@ -604,8 +945,24 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       return;
     }
 
-    // 3. Ver pagos de hoy o de la semana
-    if (lower.includes('pagos') || lower.includes('hoy') || lower.includes('grilla')) {
+    // 3. Carga manual de facturas / invoices
+    const isManualInvoice =
+      lower === '3' ||
+      lower === '3.' ||
+      lower.includes('cargar factura') ||
+      lower.includes('registrar factura') ||
+      lower.includes('nueva factura') ||
+      lower.includes('alta factura') ||
+      lower.includes('cargar boleta') ||
+      lower.includes('cargar ticket');
+
+    if (isManualInvoice) {
+      await this.startManualInvoiceRegistration(tenantUser, rawFrom);
+      return;
+    }
+
+    // 4. Ver pagos de hoy o de la semana
+    if (lower === '4' || lower === '4.' || lower.includes('pagos') || lower.includes('hoy') || lower.includes('grilla')) {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
@@ -654,9 +1011,27 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       return;
     }
 
-    // 4. Consultas de IA / Insights (Plan Ultra)
+    // 5. Dashboard Web
+    if (
+      lower === '5' ||
+      lower === '5.' ||
+      lower.includes('dashboard') ||
+      lower.includes('panel') ||
+      lower.includes('web')
+    ) {
+      const dashboardMsg = `🌐 *Dashboard Web en Tiempo Real*
+
+Puedes consultar el estado de tus facturas, grilla de pagos y métricas por rubro en:
+🔗 http://localhost:4000/api/dashboard/grid?tenantId=${tenantUser.tenantId}
+
+💡 _En producción, este enlace contará con login web seguro y vista Kanban completa._`;
+      await whatsappService.sendText(rawFrom, dashboardMsg);
+      return;
+    }
+
+    // 6. Consultas de IA / Insights (Plan Ultra)
     if (lower.includes('insight') || lower.includes('cuanto') || lower.includes('analisis') || lower.includes('proveedores')) {
-      if (tenantUser.tenant.planType !== 'ULTRA') {
+      if (tenantUser.tenant.plan?.code !== 'ULTRA') {
         await whatsappService.sendText(
           rawFrom,
           '💡 *Esta consulta requiere el Plan Ultra.* Con el Plan Ultra puedes consultar insights financieros con IA sobre proveedores, gastos por rubro y proyecciones.'
@@ -666,7 +1041,6 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
 
       await whatsappService.startTyping(rawFrom);
 
-      // Traer resumen de facturas y proveedores con su categoría
       const suppliers = await prisma.supplier.findMany({
         where: { tenantId: tenantUser.tenantId },
         include: { category: true, invoices: true },
@@ -687,17 +1061,315 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       return;
     }
 
-    // Mensaje de ayuda genérico
-    const helpMessage = `👋 *Hola ${tenantUser.fullName}*
+    // Menú de Ayuda Completo y Dinámico según el Plan
+    const planCode = tenantUser.tenant.plan?.code || 'BASIC';
+    const planName = tenantUser.tenant.plan?.name || `Plan ${planCode}`;
 
-Puedes interactuar con el sistema de las siguientes formas:
-📸 *Envía una foto o PDF:* Carga automática de factura y proveedor.
-📝 *Escribe "Registrar nuevo proveedor":* Alta manual guiada de proveedores formales o informales.
-📋 *Escribe "pagos":* Ver grilla de pagos de los próximos 7 días.
-${tenantUser.tenant.planType === 'ULTRA' ? '🤖 *Haz preguntas financieras:* Ej. "¿Cuánto le pagamos este mes a cada rubro?"' : ''}
-🌐 *Dashboard Web:* Visualiza la grilla completa en tiempo real.`;
+    let helpMessage = `👋 *Menú de Opciones — ${tenantUser.fullName}*\n`;
+    helpMessage += `📦 *Tu Plan Activo:* ${planName}\n\n`;
+    helpMessage += `Tienes disponibles las siguientes funciones:\n\n`;
+    helpMessage += `📸 *1. Envía una foto o PDF:* Carga automática de factura y proveedor con IA.\n`;
+    helpMessage += `👥 *2. Registrar nuevo proveedor:* Escribe *"Registrar nuevo proveedor"* para dar de alta proveedores formales o informales.\n`;
+    helpMessage += `📝 *3. Carga manual de Factura / Ticket:* Escribe *"Cargar factura"* o *"Registrar factura"* si tienes un comprobante en papel.\n`;
+    helpMessage += `📅 *4. Pagos:* Escribe *"Pagos"* para ver la grilla de pagos programados de los próximos 7 días y el total a pagar.\n`;
+    helpMessage += `🌐 *5. Dashboard Web:* Escribe *"Dashboard"* para acceder a tu panel de control y métricas.\n`;
+
+    if (planCode === 'PROFESSIONAL' || planCode === 'ULTRA') {
+      helpMessage += `\n✨ *Funciones de tu Plan ${planName}:*\n`;
+      helpMessage += `📲 *Envío a Proveedores:* Envío directo del comprobante de transferencia al WhatsApp de tus proveedores.\n`;
+      helpMessage += `📊 *Métricas por Rubro:* Análisis consolidado de compras y gastos por rubro.\n`;
+    }
+
+    if (planCode === 'ULTRA') {
+      helpMessage += `🤖 *Consultas Financieras con IA:* Pregunta lo que necesites en lenguaje natural (ej: *"¿Cuánto le pagamos este mes a cada rubro?"*, *"¿Qué proveedor acumula más deuda?"*).\n`;
+    }
+
+    if (planCode === 'BASIC') {
+      helpMessage += `\n💡 _Tip: Con los planes Profesional y Ultra accedes además al envío automático de comprobantes por WhatsApp y a consultas e insights financieros con IA._\n`;
+    }
 
     await whatsappService.sendText(rawFrom, helpMessage);
+  }
+
+  /**
+   * Intérprete inteligente de fechas en lenguaje natural o formatos estándar
+   */
+  private parseNaturalDate(text: string): Date | null {
+    const clean = text.trim().toLowerCase();
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+
+    if (clean === 'hoy') {
+      return now;
+    }
+    if (clean === 'mañana' || clean === 'manana') {
+      const d = new Date(now);
+      d.setDate(d.getDate() + 1);
+      return d;
+    }
+
+    const inDaysMatch = clean.match(/en\s+(\d+)\s+d/);
+    if (inDaysMatch) {
+      const days = parseInt(inDaysMatch[1], 10);
+      const d = new Date(now);
+      d.setDate(d.getDate() + days);
+      return d;
+    }
+
+    const dayNames = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+    for (let i = 0; i < dayNames.length; i++) {
+      const name = dayNames[i];
+      const nameNorm = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const cleanNorm = clean.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (cleanNorm.includes(nameNorm)) {
+        const todayDay = now.getDay();
+        let daysToAdd = (i - todayDay + 7) % 7;
+        if (daysToAdd === 0) daysToAdd = 7;
+        const d = new Date(now);
+        d.setDate(d.getDate() + daysToAdd);
+        return d;
+      }
+    }
+
+    const slashParts = clean.split('/');
+    if (slashParts.length === 3) {
+      const dd = parseInt(slashParts[0], 10);
+      const mm = parseInt(slashParts[1], 10) - 1;
+      let yyyy = parseInt(slashParts[2], 10);
+      if (yyyy < 100) yyyy += 2000;
+      const d = new Date(yyyy, mm, dd);
+      if (!isNaN(d.getTime())) return d;
+    } else if (slashParts.length === 2) {
+      const dd = parseInt(slashParts[0], 10);
+      const mm = parseInt(slashParts[1], 10) - 1;
+      const yyyy = now.getFullYear();
+      let d = new Date(yyyy, mm, dd);
+      if (d < now) {
+        d = new Date(yyyy + 1, mm, dd);
+      }
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    const hyphenParts = clean.split('-');
+    if (hyphenParts.length === 3) {
+      if (hyphenParts[0].length === 4) {
+        const parsed = new Date(clean);
+        if (!isNaN(parsed.getTime())) return parsed;
+      } else {
+        const dd = parseInt(hyphenParts[0], 10);
+        const mm = parseInt(hyphenParts[1], 10) - 1;
+        let yyyy = parseInt(hyphenParts[2], 10);
+        if (yyyy < 100) yyyy += 2000;
+        const d = new Date(yyyy, mm, dd);
+        if (!isNaN(d.getTime())) return d;
+      }
+    }
+
+    const fallback = new Date(clean);
+    if (!isNaN(fallback.getTime())) {
+      return fallback;
+    }
+
+    return null;
+  }
+
+  /**
+   * Inicia el flujo conversacional para cambiar la fecha de pago a una fecha personalizada
+   */
+  private async initiateChangePaymentDate(tenantUser: any, rawFrom: string, text: string): Promise<void> {
+    let invoiceId: string | null = null;
+    if (text.startsWith('cambiar_fecha_')) {
+      invoiceId = text.replace('cambiar_fecha_', '').trim();
+    }
+
+    let invoice = null;
+    if (invoiceId) {
+      invoice = await prisma.invoice.findFirst({
+        where: { id: invoiceId, tenantId: tenantUser.tenantId },
+        include: { supplier: true },
+      });
+    }
+
+    if (!invoice) {
+      invoice = await prisma.invoice.findFirst({
+        where: { tenantId: tenantUser.tenantId },
+        orderBy: { createdAt: 'desc' },
+        include: { supplier: true },
+      });
+    }
+
+    if (!invoice) {
+      await whatsappService.sendText(rawFrom, '⚠️ No tienes facturas registradas en la grilla para reprogramar.');
+      return;
+    }
+
+    const friendlyCurrent = paymentGridService.formatFriendlyDate(invoice.scheduledPaymentDate);
+    const amountStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(invoice.amount));
+
+    await prisma.conversationSession.upsert({
+      where: { phoneNumber: tenantUser.phoneNumber },
+      update: {
+        state: 'WAITING_NEW_PAYMENT_DATE',
+        contextData: { invoiceId: invoice.id },
+      },
+      create: {
+        phoneNumber: tenantUser.phoneNumber,
+        state: 'WAITING_NEW_PAYMENT_DATE',
+        contextData: { invoiceId: invoice.id },
+      },
+    });
+
+    const prompt = `📅 *Cambiar Fecha de Pago*\n\n` +
+      `🏢 *Proveedor:* ${invoice.supplier.businessName}\n` +
+      `🧾 *Comprobante:* Nº ${invoice.invoiceNumber}\n` +
+      `💰 *Monto:* ${amountStr}\n` +
+      `📅 *Fecha actual en grilla:* ${friendlyCurrent}\n\n` +
+      `Por favor, escribe la *nueva fecha* en la que deseas pagar (ej: *25/09*, *15/10/2026*, *el viernes*, *en 10 días*, o *mañana*):`;
+
+    await whatsappService.sendText(rawFrom, prompt);
+  }
+
+  /**
+   * Procesa la nueva fecha de pago enviada por el usuario
+   */
+  private async handleNewPaymentDateStep(tenantUser: any, session: any, rawFrom: string, text: string): Promise<void> {
+    const ctx = (session.contextData as any) || {};
+    const invoiceId = ctx.invoiceId;
+
+    const parsedDate = this.parseNaturalDate(text);
+    if (!parsedDate) {
+      await whatsappService.sendText(
+        rawFrom,
+        '⚠️ No pudimos interpretar esa fecha. Por favor escribe una fecha válida como *25/09/2026*, *viernes*, o *en 5 días*:'
+      );
+      return;
+    }
+
+    const invoice = await prisma.invoice.findFirst({
+      where: { id: invoiceId, tenantId: tenantUser.tenantId },
+      include: { supplier: true },
+    });
+
+    if (!invoice) {
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await whatsappService.sendText(rawFrom, '⚠️ No se encontró la factura a reprogramar.');
+      return;
+    }
+
+    await prisma.invoice.update({
+      where: { id: invoice.id },
+      data: {
+        scheduledPaymentDate: parsedDate,
+      },
+    });
+
+    await prisma.conversationSession.delete({ where: { id: session.id } });
+
+    const newFriendlyDate = paymentGridService.formatFriendlyDate(parsedDate);
+    const successMsg = `✅ *¡Fecha de Pago Actualizada!*
+
+🏢 *Proveedor:* ${invoice.supplier.businessName}
+🧾 *Comprobante:* Nº ${invoice.invoiceNumber}
+📅 *Nueva Fecha de Pago:* *${newFriendlyDate}*
+
+_La factura quedó reprogramada en tu grilla de pagos._`;
+
+    await whatsappService.sendText(rawFrom, successMsg);
+  }
+
+  /**
+   * Pospone la factura 7 días
+   */
+  private async handlePostponeInvoice(tenantUser: any, rawFrom: string, text: string): Promise<void> {
+    let invoiceId: string | null = null;
+    if (text.startsWith('posponer_')) {
+      invoiceId = text.replace('posponer_', '').trim();
+    }
+
+    let invoice = null;
+    if (invoiceId) {
+      invoice = await prisma.invoice.findFirst({
+        where: { id: invoiceId, tenantId: tenantUser.tenantId },
+        include: { supplier: true },
+      });
+    }
+
+    if (!invoice) {
+      invoice = await prisma.invoice.findFirst({
+        where: { tenantId: tenantUser.tenantId },
+        orderBy: { createdAt: 'desc' },
+        include: { supplier: true },
+      });
+    }
+
+    if (!invoice) {
+      await whatsappService.sendText(rawFrom, '⚠️ No tienes facturas registradas en la grilla para posponer.');
+      return;
+    }
+
+    const currentScheduled = new Date(invoice.scheduledPaymentDate);
+    const newDate = new Date(currentScheduled);
+    newDate.setDate(newDate.getDate() + 7);
+
+    await prisma.invoice.update({
+      where: { id: invoice.id },
+      data: { scheduledPaymentDate: newDate },
+    });
+
+    const friendlyNew = paymentGridService.formatFriendlyDate(newDate);
+    const msg = `⏰ *Pago Pospuesto 1 Semana*\n\n` +
+      `🏢 *Proveedor:* ${invoice.supplier.businessName}\n` +
+      `🧾 *Comprobante:* Nº ${invoice.invoiceNumber}\n` +
+      `📅 *Nueva Fecha Programada:* *${friendlyNew}*\n\n` +
+      `_Si prefieres fijar otra fecha exacta, escribe "Cambiar fecha"._`;
+
+    await whatsappService.sendText(rawFrom, msg);
+  }
+
+  /**
+   * Marca el pago para el día de hoy
+   */
+  private async handlePayTodayInvoice(tenantUser: any, rawFrom: string, text: string): Promise<void> {
+    let invoiceId: string | null = null;
+    if (text.startsWith('pagar_hoy_')) {
+      invoiceId = text.replace('pagar_hoy_', '').trim();
+    }
+
+    let invoice = null;
+    if (invoiceId) {
+      invoice = await prisma.invoice.findFirst({
+        where: { id: invoiceId, tenantId: tenantUser.tenantId },
+        include: { supplier: true },
+      });
+    }
+
+    if (!invoice) {
+      invoice = await prisma.invoice.findFirst({
+        where: { tenantId: tenantUser.tenantId },
+        orderBy: { createdAt: 'desc' },
+        include: { supplier: true },
+      });
+    }
+
+    if (!invoice) {
+      await whatsappService.sendText(rawFrom, '⚠️ No tienes facturas registradas en la grilla.');
+      return;
+    }
+
+    const today = new Date();
+    await prisma.invoice.update({
+      where: { id: invoice.id },
+      data: { scheduledPaymentDate: today },
+    });
+
+    const friendlyToday = paymentGridService.formatFriendlyDate(today);
+    const msg = `⚡ *Agendado para Pagar Hoy*\n\n` +
+      `🏢 *Proveedor:* ${invoice.supplier.businessName}\n` +
+      `🧾 *Comprobante:* Nº ${invoice.invoiceNumber}\n` +
+      `📅 *Fecha de Pago:* *${friendlyToday}*\n\n` +
+      `_Quedó priorizado para los pagos del día de hoy._`;
+
+    await whatsappService.sendText(rawFrom, msg);
   }
 }
 

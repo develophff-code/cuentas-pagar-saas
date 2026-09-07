@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { botService } from '../modules/bot/bot.service.js';
+import { dashboardService } from '../modules/dashboard/dashboard.service.js';
 import { prisma } from '../lib/prisma.js';
 
 export const webhookRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
@@ -102,10 +103,47 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
   });
 
   // ==========================================
-  // Endpoints REST para el Dashboard Web
+  // Endpoints para el Dashboard Web (HTML y API)
   // ==========================================
 
-  // 1. Grilla de pagos de un tenant
+  // Dashboard Web UI y Datos de Grilla
+  fastify.get('/api/dashboard/grid', async (request, reply) => {
+    const query: any = request.query || {};
+    const tenantId = query.tenantId;
+
+    if (!tenantId) {
+      return reply.status(400).send({ error: 'Falta el parámetro tenantId en la URL.' });
+    }
+
+    if (query.format === 'json') {
+      const invoices = await prisma.invoice.findMany({
+        where: { tenantId },
+        include: {
+          supplier: {
+            include: { category: true, bankAccounts: true },
+          },
+        },
+        orderBy: { scheduledPaymentDate: 'asc' },
+      });
+      return reply.send({ success: true, invoices });
+    }
+
+    const html = await dashboardService.renderHtml(tenantId);
+    return reply.type('text/html').send(html);
+  });
+
+  // Alias directo /dashboard?tenantId=...
+  fastify.get('/dashboard', async (request, reply) => {
+    const query: any = request.query || {};
+    const tenantId = query.tenantId;
+    if (!tenantId) {
+      return reply.status(400).send({ error: 'Falta el parámetro tenantId en la URL.' });
+    }
+    const html = await dashboardService.renderHtml(tenantId);
+    return reply.type('text/html').send(html);
+  });
+
+  // 1. Grilla de pagos de un tenant (JSON)
   fastify.get('/api/tenants/:tenantId/grid', async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
 
@@ -154,7 +192,9 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
   fastify.get('/api/tenants/:tenantId/categories', async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const categories = await prisma.category.findMany({
-      where: { tenantId },
+      where: {
+        OR: [{ tenantId: null }, { tenantId }],
+      },
       orderBy: { name: 'asc' },
     });
     return reply.send({ success: true, categories });

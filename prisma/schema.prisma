@@ -7,10 +7,17 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum PlanType {
+enum PlanCode {
   BASIC
   PROFESSIONAL
   ULTRA
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELED
 }
 
 enum UserRole {
@@ -27,26 +34,86 @@ enum InvoiceStatus {
   CANCELADA
 }
 
-model Tenant {
-  id           String    @id @default(uuid())
-  cuit         String    @unique
-  businessName String
-  address      String?
-  planType     PlanType  @default(BASIC)
-  isActive     Boolean   @default(true)
-  maxUsers     Int       @default(1)
-  maxSuppliers Int       @default(25)
-  maxInvoices  Int       @default(100)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+model Plan {
+  id                  String      @id @default(uuid())
+  code                PlanCode    @unique
+  name                String
+  description         String?
+  maxUsers            Int         @default(1)
+  maxSuppliers        Int         @default(25)
+  maxInvoices         Int         @default(100)
+  hasSupplierReceipts Boolean     @default(false)
+  hasAiInsights       Boolean     @default(false)
+  isActive            Boolean     @default(true)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
 
+  prices              PlanPrice[]
+  tenants             Tenant[]
+
+  @@map("plans")
+}
+
+model PlanPrice {
+  id        String    @id @default(uuid())
+  planId    String
+  amount    Decimal   @db.Decimal(12, 2)
+  currency  String    @default("ARS")
+  validFrom DateTime  @default(now())
+  validTo   DateTime? // NULL indica que es el precio vigente actual
+  createdAt DateTime  @default(now())
+
+  plan          Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
+  subscriptions Subscription[]
+
+  @@index([planId, validFrom, validTo])
+  @@map("plan_prices")
+}
+
+model Tenant {
+  id                 String             @id @default(uuid())
+  cuit               String             @unique
+  businessName       String
+  address            String?
+  planId             String?
+  subscriptionStatus SubscriptionStatus @default(TRIAL)
+  trialEndsAt        DateTime           @default(now()) // 7 días a partir de la fecha de alta
+  isActive           Boolean            @default(true)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  plan              Plan?              @relation(fields: [planId], references: [id])
   users             TenantUser[]
   categories        Category[]
   suppliers         Supplier[]
   invoices          Invoice[]
+  subscriptions     Subscription[]
   paymentGridConfig PaymentGridConfig?
 
   @@map("tenants")
+}
+
+model Subscription {
+  id                String    @id @default(uuid())
+  tenantId          String
+  planPriceId       String?
+  amount            Decimal   @db.Decimal(12, 2)
+  currency          String    @default("ARS")
+  status            String    @default("PENDING") // PENDING, PAID, FAILED, EXPIRED
+  paymentProvider   String    @default("MERCADO_PAGO")
+  externalReference String?   // ID de pago de Mercado Pago
+  paymentLink       String?   // URL del link de pago enviado a WhatsApp
+  paidAt            DateTime?
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  planPrice PlanPrice? @relation(fields: [planPriceId], references: [id])
+
+  @@index([tenantId, status])
+  @@map("subscriptions")
 }
 
 model TenantUser {
@@ -67,12 +134,12 @@ model TenantUser {
 
 model Category {
   id        String   @id @default(uuid())
-  tenantId  String
+  tenantId  String?  // NULL indica categoría maestra/global disponible para todos los tenants
   name      String   // Nombre del rubro ej: "Ferretería", "Insumos", "Materia Prima"
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant    Tenant?    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   suppliers Supplier[]
 
   @@unique([tenantId, name])
