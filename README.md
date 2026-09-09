@@ -27,15 +27,15 @@ Plataforma SaaS operada de forma nativa a través de **WhatsApp** (vía **YCloud
 
 ```mermaid
 flowchart TD
-    User["📱 Usuario / Proveedor"] <-->|WhatsApp Oficial| Meta["🌐 WhatsApp Cloud API (Meta)"]
-    Meta <-->|Webhooks / Mensajes| YCloud["☁️ YCloud Gateway"]
-    YCloud <-->|HTTPS (SSL)| Apache["🛡️ Apache2 Reverse Proxy (apagar.averiq.cloud)"]
-    Apache <-->|ProxyPass :4000| Fastify["⚡ Backend Fastify / Node.js (PM2)"]
-    Fastify <-->|Buffer Foto / PDF| Gemini["🤖 Google Gemini IA (Extracción OCR)"]
-    Gemini -->|JSON Estructurado| Fastify
-    Fastify <-->|Prisma ORM| Postgres[("🐘 PostgreSQL")]
-    Cron["⏰ Morning Alert Cron (08:00 AM)"] -->|Resumen Pagos 24h| Fastify
-    Fastify -->|Dashboard HTML / API| Browser["💻 Navegador Web"]
+    User["📱 Usuario / Proveedor"] <-->|"WhatsApp Oficial"| Meta["🌐 WhatsApp Cloud API - Meta"]
+    Meta <-->|"Webhooks / Mensajes"| YCloud["☁️ YCloud Gateway"]
+    YCloud <-->|"HTTPS - SSL"| Apache["🛡️ Apache2 Reverse Proxy - apagar.averiq.cloud"]
+    Apache <-->|"ProxyPass Puerto 4000"| Fastify["⚡ Backend Fastify / Node.js - PM2"]
+    Fastify <-->|"Buffer Foto / PDF"| Gemini["🤖 Google Gemini IA - Extracción OCR"]
+    Gemini -->|"JSON Estructurado"| Fastify
+    Fastify <-->|"Prisma ORM"| Postgres["🐘 PostgreSQL"]
+    Cron["⏰ Morning Alert Cron - 08:00 AM"] -->|"Resumen Pagos 24h"| Fastify
+    Fastify -->|"Dashboard HTML / API"| Browser["💻 Navegador Web"]
 ```
 
 ---
