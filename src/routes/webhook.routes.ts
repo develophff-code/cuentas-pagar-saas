@@ -4,6 +4,16 @@ import { dashboardService } from '../modules/dashboard/dashboard.service.js';
 import { prisma } from '../lib/prisma.js';
 
 export const webhookRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
+  // Ruta raíz
+  fastify.get('/', async () => {
+    return {
+      service: 'Cuentas a Pagar SaaS API',
+      status: 'online',
+      version: '1.0.0',
+      timestamp: new Date().toISOString(),
+    };
+  });
+
   // Endpoint de salud
   fastify.get('/health', async () => {
     return { status: 'ok', timestamp: new Date().toISOString() };

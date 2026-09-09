@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "db:clean": "tsx scripts/clean-tenants.ts"
   },
   "keywords": ["whatsapp", "waha", "cuentas-a-pagar", "facturas", "gemini", "fastify", "saas"],
   "author": "Horacio",

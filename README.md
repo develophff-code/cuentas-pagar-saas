@@ -1,128 +1,192 @@
-# 📱 Cuentas a Pagar SaaS - Bot de WhatsApp & Gestión de Proveedores
+# 📱 Cuentas a Pagar SaaS — Bot de WhatsApp & Gestión de Proveedores
 
-Plataforma SaaS operada principalmente a través de **WhatsApp** para la automatización integral de cuentas a pagar, recepción inteligente de facturas/boletas de proveedores, ordenamiento en grilla semanal de corte y análisis financiero con Inteligencia Artificial.
+Plataforma SaaS operada de forma nativa a través de **WhatsApp** (vía **YCloud / WhatsApp Cloud API**) para la automatización integral del ciclo de cuentas a pagar: recepción inteligente de facturas y tickets, ordenamiento en grilla semanal de corte, emisión de comprobantes formales de pago, panel web en tiempo real y análisis financiero con Inteligencia Artificial.
 
-Repositorio: [https://github.com/develophff-code/cuentas-pagar-saas](https://github.com/develophff-code/cuentas-pagar-saas)
+* **Dominio Producción:** [https://apagar.averiq.cloud](https://apagar.averiq.cloud)
+* **Repositorio:** [https://github.com/develophff-code/cuentas-pagar-saas](https://github.com/develophff-code/cuentas-pagar-saas)
+* **Rama Activa de Desarrollo:** `develop`
 
 ---
 
-## 🚀 Características Principales
+## 🚀 Funcionalidades Principales
 
-* 📸 **Ingesta Multimodal:** Recibe fotos tomadas con la cámara del celular o archivos PDF de facturas directamente por WhatsApp.
-* 🤖 **Extracción con IA (Gemini Vision):** Identifica automáticamente CUIT emisor, Razón Social, Número y Tipo de comprobante, Vencimiento, Monto Total, IVA, CBU/Alias bancario y **clasificación por Rubro**.
-* 📅 **Grilla Semanal de Pagos:** Ubica cada factura en los días fijos de pago configurados por la empresa (ej. Martes y Jueves) previos a la fecha límite para evitar mora.
-* ☀️ **Alertas Matutinas (Cron):** Notifica automáticamente a las 08:00 AM a los celulares autorizados el resumen de compromisos de las próximas 24 horas con datos de transferencia.
-* 👥 **Arquitectura Multi-tenant:**
-  * **Plan Básico:** 1 celular, hasta 25 proveedores y 100 facturas/mes.
-  * **Plan Profesional:** Hasta 3 celulares por empresa, 80 proveedores, envío de comprobantes y analítica por rubro.
-  * **Plan Ultra:** Hasta 3 celulares, 150+ proveedores, consultas analíticas e insights financieros conversacionales con IA.
-* 🏷️ **Ficha de Proveedores y Rubros:** Registro unificado de proveedores con cuentas bancarias y rubros comerciales para comparativas de compras.
-* 📊 **API REST para Dashboard Web:** Endpoints listos para visualización Kanban de pagos, edición de fechas y gráficos de gastos por rubro.
+1. 📸 **Carga Automática con IA (Fotos y PDFs):** Envío directo de fotos o archivos PDF de facturas/tickets. Google Gemini 2.0 Flash extrae: CUIT emisor, Razón Social, Tipo y Número de Comprobante, Fecha de Vencimiento, Monto Total, IVA, CBU/CVU/Alias bancario y clasificación automática por Rubro.
+2. 🏢 **Gestión de Proveedores:** Alta guiada paso a paso de proveedores (CUIT, Razón Social, CBU/CVU/Alias, Categoría y Teléfono de contacto).
+3. 🧾 **Carga Manual de Comprobantes:** Registro manual alternativo de facturas o tickets con asignación a proveedor existente.
+4. 📅 **Grilla Semanal de Pagos:** Asignación inteligente a los días de pago preferidos de la empresa (ej. Martes y Jueves) previos al vencimiento para evitar mora.
+5. 💳 **Registrador de Pagos & Envío de Constancias:** Flujo guiado para asentar pagos realizados. Permite despachar automáticamente una constancia formal de pago vía WhatsApp directo al número del proveedor.
+6. 🌐 **Dashboard Web en Tiempo Real:** Interfaz responsiva con métricas clave (Total a pagar en 7 días, vencidos, pendientes, pagados), desglose por rubro y tabla detallada de comprobantes.
+7. 👥 **Multi-usuario por Empresa (Planes Profesional y Ultra):** Autorización de hasta 3 números celulares por tenant con roles compartidos.
+8. 📊 **Métricas por Rubro:** Resumen consolidado directo en WhatsApp de compras y gastos acumulados por categoría comercial.
+9. 📲 **Envío Automatizado a Proveedores:** Notificación inmediata con detalle del pago acreditado.
+10. 🧠 **Consultas Financieras con IA (Plan Ultra):** Asesor analítico en lenguaje natural sobre finanzas, tendencias de gasto y sugerencias de optimización de flujo de fondos.
 
 ---
 
 ## 🏗️ Arquitectura del Sistema
 
 ```mermaid
-flowchart LR
-    User["📱 Celular Cliente"] <-->|Mensajes, Fotos, PDFs| WAHA["WAHA (WhatsApp HTTP API)"]
-    WAHA -->|Webhook POST| Backend["⚡ Backend Fastify (Node.js/TS)"]
-    Backend -->|Buffer Imagen/PDF| Gemini["🤖 Gemini Vision (OCR)"]
-    Gemini -->|JSON Estructurado| Backend
-    Backend <-->|Prisma ORM| Postgres[("🐘 PostgreSQL")]
-    Cron["⏰ Morning Cron (08:00 AM)"] -->|Reporte Diario 24h| Backend
-    Backend -->|Notificaciones| WAHA
+flowchart TD
+    User["📱 Usuario / Proveedor"] <-->|WhatsApp Oficial| Meta["🌐 WhatsApp Cloud API (Meta)"]
+    Meta <-->|Webhooks / Mensajes| YCloud["☁️ YCloud Gateway"]
+    YCloud <-->|HTTPS (SSL)| Apache["🛡️ Apache2 Reverse Proxy (apagar.averiq.cloud)"]
+    Apache <-->|ProxyPass :4000| Fastify["⚡ Backend Fastify / Node.js (PM2)"]
+    Fastify <-->|Buffer Foto / PDF| Gemini["🤖 Google Gemini IA (Extracción OCR)"]
+    Gemini -->|JSON Estructurado| Fastify
+    Fastify <-->|Prisma ORM| Postgres[("🐘 PostgreSQL")]
+    Cron["⏰ Morning Alert Cron (08:00 AM)"] -->|Resumen Pagos 24h| Fastify
+    Fastify -->|Dashboard HTML / API| Browser["💻 Navegador Web"]
 ```
 
 ---
 
 ## 🛠️ Stack Tecnológico
 
-* **Runtime:** Node.js v24+ con TypeScript
-* **Framework Web:** [Fastify](https://fastify.dev/)
-* **ORM:** [Prisma](https://www.prisma.io/)
+* **Runtime:** Node.js v22+ / v24+ con TypeScript
+* **Framework Web:** [Fastify](https://fastify.dev/) con plugins de CORS y Formbody
+* **ORM:** [Prisma](https://www.prisma.io/) v6
 * **Base de Datos:** PostgreSQL
-* **WhatsApp Gateway:** [WAHA (WhatsApp HTTP API)](https://github.com/devlikeapro/waha)
-* **Inteligencia Artificial:** [Google Generative AI SDK](https://www.npmjs.com/package/@google/generative-ai) (Gemini 1.5 / 2.5 Flash)
-* **Scheduler:** Node-Cron
-* **Validación de Entorno:** Zod
+* **WhatsApp Provider:** [YCloud](https://ycloud.com/) (WhatsApp Cloud API oficial de Meta) / Soporte WAHA
+* **Inteligencia Artificial:** [Google Generative AI](https://www.npmjs.com/package/@google/generative-ai) (Gemini 2.0 Flash)
+* **Servidor Web & Proxy:** Apache2 con módulos `proxy`, `proxy_http`, `headers`, `ssl`
+* **Certificados SSL:** Let's Encrypt vía Certbot
+* **Gestor de Procesos:** PM2
 
 ---
 
-## ⚙️ Configuración e Instalación
+## ⚙️ Configuración y Variables de Entorno
 
-### 1. Clonar el repositorio
-```bash
-git clone https://github.com/develophff-code/cuentas-pagar-saas.git
-cd cuentas-pagar-saas
-```
-
-### 2. Instalar dependencias
-```bash
-npm install
-```
-
-### 3. Configurar variables de entorno
-Crea el archivo `.env` a partir de `.env.example`:
+Crea un archivo `.env` en la raíz del proyecto (basado en `.env.example`):
 
 ```env
+# Servidor
 PORT=4000
 HOST=0.0.0.0
+APP_BASE_URL=https://apagar.averiq.cloud
 
-# Base de datos PostgreSQL
+# Base de Datos PostgreSQL
 DATABASE_URL="postgresql://postgres:TU_PASSWORD@localhost:5432/cuentas_pagar_saas?schema=public"
 
-# Conexión WAHA
-WAHA_BASE_URL="https://waha.averiq.cloud"
-WAHA_API_KEY="tu_waha_api_key"
-WAHA_SESSION="default"
+# Proveedor WhatsApp (YCloud para producción)
+WHATSAPP_PROVIDER=ycloud
+YCLOUD_API_KEY=tu_ycloud_api_key_aqui
+YCLOUD_PHONE_NUMBER=54911xxxxxxxx
 
-# Google Gemini API
-GEMINI_API_KEY="tu_gemini_api_key"
+# Google Gemini IA
+GEMINI_API_KEY=tu_gemini_api_key_aqui
+
+# MercadoPago (Opcional - Fase Final)
+MERCADOPAGO_ACCESS_TOKEN=
+MERCADOPAGO_WEBHOOK_SECRET=
 ```
-
-### 4. Ejecutar migraciones de base de datos
-```bash
-npx prisma migrate dev --name init
-```
-
-### 5. Iniciar en modo desarrollo
-```bash
-npm run dev
-```
-
-El servidor quedará escuchando en `http://localhost:4000`.
 
 ---
 
-## 🌿 Flujo de Trabajo con Git (Git Flow)
-
-Este proyecto utiliza un modelo de ramas estructurado:
-
-* **`main`**: Rama principal y estable lista para producción.
-* **`develop`**: Rama de desarrollo activo donde se integran y prueban todas las nuevas características antes de fusionarse a `main`.
-
-### Comandos iniciales para subir el código:
+## 💻 Scripts Disponibles
 
 ```bash
-# Inicializar repositorio local
-git init
-git branch -M main
+# Desarrollo local con recarga en vivo
+npm run dev
 
-# Agregar archivos y primer commit
-git add .
-git commit -m "feat: initial commit - core architecture, prisma schema, waha client and gemini extractor"
+# Compilar TypeScript a JavaScript de producción
+npm run build
 
-# Vincular repositorio remoto y subir main
-git remote add origin https://github.com/develophff-code/cuentas-pagar-saas.git
-git push -u origin main
+# Iniciar servidor compilado en producción
+npm run start
 
-# Crear y posicionarse en la rama develop
-git checkout -b develop
-git push -u origin develop
+# Sincronizar esquema de base de datos con Prisma
+npx prisma db push
+
+# Poblar categorías maestras y planes de suscripción
+npx prisma db seed
+
+# Limpiar datos de tenants/facturas de prueba (conserva categorías y planes)
+npm run db:clean
 ```
 
-A partir de allí, todo el trabajo diario se realiza sobre **`develop`**.
+---
+
+## 🚀 Despliegue en Servidor AWS EC2 (Apache2 + PM2)
+
+### 1. Configuración de VirtualHost en Apache2
+Crea `/etc/apache2/sites-available/apagar.averiq.cloud.conf`:
+
+```apache
+<VirtualHost *:80>
+    ServerName apagar.averiq.cloud
+
+    ProxyPreserveHost On
+    ProxyRequests Off
+    LimitRequestBody 26214400
+
+    RequestHeader set X-Forwarded-Proto expr=%{REQUEST_SCHEME}
+    RequestHeader set X-Real-IP expr=%{REMOTE_ADDR}
+    ProxyTimeout 60
+
+    ProxyPass / http://127.0.0.1:4000/
+    ProxyPassReverse / http://127.0.0.1:4000/
+
+    ErrorLog ${APACHE_LOG_DIR}/apagar_error.log
+    CustomLog ${APACHE_LOG_DIR}/apagar_access.log combined
+</VirtualHost>
+```
+
+Habilitar y recargar:
+```bash
+sudo a2ensite apagar.averiq.cloud.conf
+sudo apache2ctl configtest
+sudo systemctl reload apache2
+```
+
+### 2. Certificado SSL con Certbot
+```bash
+sudo certbot --apache -d apagar.averiq.cloud
+```
+
+### 3. Puesta en marcha con PM2
+```bash
+cd /var/www/html/apagar
+npm install
+npx prisma generate
+npx prisma db push
+npx prisma db seed
+npm run build
+
+# Iniciar con PM2
+pm2 start dist/server.js --name "apagar-saas"
+pm2 save
+pm2 startup
+```
+
+### 4. Configurar Webhook en YCloud
+* **Webhook URL:** `https://apagar.averiq.cloud/api/webhook/ycloud`
+* **Eventos:** `whatsapp.inbound_message.received`
+
+---
+
+## 🔄 Flujo de Actualización Continua (CI/CD)
+
+1. Desarrollar y verificar cambios en local en la rama `develop`.
+2. Subir commits a GitHub:
+   ```bash
+   git add .
+   git commit -m "feat: nueva funcionalidad"
+   git push origin develop
+   ```
+3. En la EC2, actualizar y reiniciar en 5 segundos con el script `deploy.sh`:
+   ```bash
+   ./deploy.sh
+   ```
+
+Contenido de `deploy.sh`:
+```bash
+#!/bin/bash
+echo "🚀 Actualizando Cuentas a Pagar SaaS..."
+git pull origin develop
+npm run build
+pm2 restart apagar-saas
+echo "✅ Despliegue completado con éxito."
+```
 
 ---
 

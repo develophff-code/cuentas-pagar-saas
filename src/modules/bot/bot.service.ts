@@ -1,4 +1,5 @@
 import { prisma } from '../../lib/prisma.js';
+import { env } from '../../config/env.js';
 import { whatsappService } from '../whatsapp/whatsapp.service.js';
 import { invoiceExtractorService } from '../extractor/invoice-extractor.service.js';
 import { paymentGridService } from '../payments/grid.service.js';
@@ -107,6 +108,16 @@ _Apenas se registre el pago, tu cuenta se reactivará de forma inmediata._`;
 
     if (activeSession && activeSession.state === 'WAITING_NEW_PAYMENT_DATE') {
       await this.handleNewPaymentDateStep(tenantUser, activeSession, rawFrom, text);
+      return;
+    }
+
+    if (activeSession && activeSession.state.startsWith('ADD_USER_')) {
+      await this.handleAddUserStep(tenantUser, activeSession, rawFrom, text);
+      return;
+    }
+
+    if (activeSession && activeSession.state.startsWith('PAYMENT_REG_')) {
+      await this.handleRegisterPaymentStep(tenantUser, activeSession, rawFrom, text);
       return;
     }
 
@@ -297,7 +308,9 @@ _¿Con qué plan deseas comenzar hoy? Responde con 1, 2 o 3._`;
 🚀 *¡Ya puedes empezar!*
 * 📸 *Envía una foto o PDF:* Carga automática con IA.
 * 📝 *Escribe "Cargar factura":* Registro manual si no tienes comprobante digital.
-* 👥 *Escribe "Registrar nuevo proveedor":* Alta manual de proveedores.`;
+* 👥 *Escribe "Registrar nuevo proveedor":* Alta manual de proveedores.
+${maxPhones > 1 ? '* 📱 *Escribe "Cargar celular":* Para autorizar otros celulares de tu equipo (hasta ' + maxPhones + ').\n' : ''}
+💡 _Escribe *"Menu"* o *"Ayuda"* en cualquier momento para ver todas las opciones disponibles._`;
 
         await whatsappService.sendText(rawFrom, successMessage);
       } catch (err: any) {
@@ -883,7 +896,33 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
   private async handleRegisteredUserText(tenantUser: any, rawFrom: string, text: string): Promise<void> {
     const lower = text.toLowerCase().trim();
 
-    // 0. Manejo de botones e intenciones de reprogramación de fecha de pago
+    // Invocación explícita del Menú de Opciones
+    if (
+      lower === 'menu' ||
+      lower === 'menú' ||
+      lower === 'ayuda' ||
+      lower === 'help' ||
+      lower === 'opciones' ||
+      lower === 'hola' ||
+      lower === 'inicio'
+    ) {
+      await this.sendHelpMenu(tenantUser, rawFrom);
+      return;
+    }
+
+    // 0. Manejo de botones de envío de comprobante a proveedor
+    if (text.startsWith('enviar_comprobante_')) {
+      const invoiceId = text.replace('enviar_comprobante_', '').trim();
+      await this.sendSupplierPaymentReceipt(tenantUser, rawFrom, invoiceId);
+      return;
+    }
+
+    if (text === 'no_enviar_comprobante' || lower === 'no enviar') {
+      await whatsappService.sendText(rawFrom, '👍 Perfecto. El pago quedó registrado en tu grilla y Dashboard.');
+      return;
+    }
+
+    // 0.1 Manejo de botones e intenciones de reprogramación de fecha de pago
     if (
       text.startsWith('cambiar_fecha_') ||
       lower.includes('cambiar fecha') ||
@@ -1011,10 +1050,26 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       return;
     }
 
-    // 5. Dashboard Web
-    if (
+    // 5. Registrar Pago de Factura (Todos los Planes)
+    const isRegisterPayment =
       lower === '5' ||
       lower === '5.' ||
+      lower.includes('registrar pago') ||
+      lower.includes('pagar factura') ||
+      lower.includes('marcar pagada') ||
+      lower.includes('pago realizado') ||
+      lower.includes('registrar un pago') ||
+      lower.includes('hacer pago');
+
+    if (isRegisterPayment) {
+      await this.startRegisterPaymentFlow(tenantUser, rawFrom);
+      return;
+    }
+
+    // 6. Dashboard Web
+    if (
+      lower === '6' ||
+      lower === '6.' ||
       lower.includes('dashboard') ||
       lower.includes('panel') ||
       lower.includes('web')
@@ -1022,15 +1077,71 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       const dashboardMsg = `🌐 *Dashboard Web en Tiempo Real*
 
 Puedes consultar el estado de tus facturas, grilla de pagos y métricas por rubro en:
-🔗 http://localhost:4000/api/dashboard/grid?tenantId=${tenantUser.tenantId}
+🔗 ${env.APP_BASE_URL}/api/dashboard/grid?tenantId=${tenantUser.tenantId}
 
 💡 _En producción, este enlace contará con login web seguro y vista Kanban completa._`;
       await whatsappService.sendText(rawFrom, dashboardMsg);
       return;
     }
 
-    // 6. Consultas de IA / Insights (Plan Ultra)
-    if (lower.includes('insight') || lower.includes('cuanto') || lower.includes('analisis') || lower.includes('proveedores')) {
+    // 7. Cargar / Autorizar Celular (Planes Profesional y Ultra)
+    const isAddPhone =
+      lower === '7' ||
+      lower === '7.' ||
+      lower.includes('cargar celular') ||
+      lower.includes('agregar celular') ||
+      lower.includes('nuevo celular') ||
+      lower.includes('alta celular') ||
+      lower.includes('cargar telefono') ||
+      lower.includes('agregar telefono') ||
+      lower.includes('autorizar celular');
+
+    if (isAddPhone) {
+      await this.startAddUserFlow(tenantUser, rawFrom);
+      return;
+    }
+
+    // 8. Métricas y Gastos por Rubro (Planes Profesional y Ultra)
+    const isRubros =
+      lower === '8' ||
+      lower === '8.' ||
+      lower.includes('metrica') ||
+      lower.includes('métrica') ||
+      lower.includes('rubro') ||
+      lower.includes('categoria') ||
+      lower.includes('categoría');
+
+    if (isRubros) {
+      await this.handleRubrosMetrics(tenantUser, rawFrom);
+      return;
+    }
+
+    // 9. Envío de Comprobantes a Proveedores (Planes Profesional y Ultra)
+    const isSupplierReceipt =
+      lower === '9' ||
+      lower === '9.' ||
+      lower.includes('envio a proveedor') ||
+      lower.includes('envío a proveedor') ||
+      lower.includes('comprobante a proveedor') ||
+      lower.includes('enviar comprobante');
+
+    if (isSupplierReceipt) {
+      await this.handleSupplierReceiptsInfo(tenantUser, rawFrom);
+      return;
+    }
+
+    // 10. Consultas de IA / Insights (Plan Ultra)
+    const isAiQuery =
+      lower === '10' ||
+      lower === '10.' ||
+      lower.includes('insight') ||
+      lower.includes('cuanto gastamos') ||
+      lower.includes('analisis financiero') ||
+      lower.includes('análisis financiero') ||
+      lower.includes('proyeccion') ||
+      lower.includes('proyección');
+
+    if (isAiQuery) {
       if (tenantUser.tenant.plan?.code !== 'ULTRA') {
         await whatsappService.sendText(
           rawFrom,
@@ -1061,31 +1172,45 @@ Puedes consultar el estado de tus facturas, grilla de pagos y métricas por rubr
       return;
     }
 
-    // Menú de Ayuda Completo y Dinámico según el Plan
+    // Mensaje de Ayuda por defecto (Fallback)
+    await this.sendHelpMenu(tenantUser, rawFrom);
+  }
+
+  /**
+   * Envía el Menú de Opciones completo y adaptado dinámicamente según el plan de la empresa
+   */
+  private async sendHelpMenu(tenantUser: any, rawFrom: string): Promise<void> {
     const planCode = tenantUser.tenant.plan?.code || 'BASIC';
     const planName = tenantUser.tenant.plan?.name || `Plan ${planCode}`;
+    const maxPhones = tenantUser.tenant.plan?.maxUsers || 1;
+    const companyName = tenantUser.tenant.businessName || tenantUser.fullName;
 
-    let helpMessage = `👋 *Menú de Opciones — ${tenantUser.fullName}*\n`;
+    let helpMessage = `👋 *Menú de Opciones — ${companyName}*\n`;
     helpMessage += `📦 *Tu Plan Activo:* ${planName}\n\n`;
     helpMessage += `Tienes disponibles las siguientes funciones:\n\n`;
     helpMessage += `📸 *1. Envía una foto o PDF:* Carga automática de factura y proveedor con IA.\n`;
     helpMessage += `👥 *2. Registrar nuevo proveedor:* Escribe *"Registrar nuevo proveedor"* para dar de alta proveedores formales o informales.\n`;
     helpMessage += `📝 *3. Carga manual de Factura / Ticket:* Escribe *"Cargar factura"* o *"Registrar factura"* si tienes un comprobante en papel.\n`;
     helpMessage += `📅 *4. Pagos:* Escribe *"Pagos"* para ver la grilla de pagos programados de los próximos 7 días y el total a pagar.\n`;
-    helpMessage += `🌐 *5. Dashboard Web:* Escribe *"Dashboard"* para acceder a tu panel de control y métricas.\n`;
+    helpMessage += `💸 *5. Registrar Pago:* Escribe *"Registrar pago"* para marcar una factura como pagada (seleccionando proveedor y factura).\n`;
+    helpMessage += `🌐 *6. Dashboard Web:* Escribe *"Dashboard"* para acceder a tu panel de control y métricas.\n`;
+
+    if (maxPhones > 1) {
+      helpMessage += `📱 *7. Cargar Celular:* Escribe *"Cargar celular"* para autorizar a miembros de tu equipo (permite hasta ${maxPhones} celulares).\n`;
+    }
 
     if (planCode === 'PROFESSIONAL' || planCode === 'ULTRA') {
-      helpMessage += `\n✨ *Funciones de tu Plan ${planName}:*\n`;
-      helpMessage += `📲 *Envío a Proveedores:* Envío directo del comprobante de transferencia al WhatsApp de tus proveedores.\n`;
-      helpMessage += `📊 *Métricas por Rubro:* Análisis consolidado de compras y gastos por rubro.\n`;
+      helpMessage += `\n✨ *Funciones adicionales de tu ${planName}:*\n`;
+      helpMessage += `📊 *8. Métricas por Rubro:* Escribe *"Métricas por rubro"* para ver el desglose consolidado de gastos por categoría.\n`;
+      helpMessage += `📲 *9. Envío a Proveedores:* Escribe *"Enviar comprobante"* para enviar la constancia de pago al WhatsApp del proveedor.\n`;
     }
 
     if (planCode === 'ULTRA') {
-      helpMessage += `🤖 *Consultas Financieras con IA:* Pregunta lo que necesites en lenguaje natural (ej: *"¿Cuánto le pagamos este mes a cada rubro?"*, *"¿Qué proveedor acumula más deuda?"*).\n`;
+      helpMessage += `🤖 *10. Consultas Financieras con IA:* Pregunta lo que necesites en lenguaje natural (ej: *"¿Cuánto le pagamos este mes a cada rubro?"*, *"¿Qué proveedor acumula más deuda?"*).\n`;
     }
 
     if (planCode === 'BASIC') {
-      helpMessage += `\n💡 _Tip: Con los planes Profesional y Ultra accedes además al envío automático de comprobantes por WhatsApp y a consultas e insights financieros con IA._\n`;
+      helpMessage += `\n💡 _Tip: Con los planes Profesional y Ultra accedes además a multi-celulares autorizados, métricas por rubro, envío automático de comprobantes por WhatsApp y a consultas e insights financieros con IA._\n`;
     }
 
     await whatsappService.sendText(rawFrom, helpMessage);
@@ -1368,6 +1493,503 @@ _La factura quedó reprogramada en tu grilla de pagos._`;
       `🧾 *Comprobante:* Nº ${invoice.invoiceNumber}\n` +
       `📅 *Fecha de Pago:* *${friendlyToday}*\n\n` +
       `_Quedó priorizado para los pagos del día de hoy._`;
+
+    await whatsappService.sendText(rawFrom, msg);
+  }
+
+  /**
+   * Inicia el flujo conversacional para autorizar un nuevo celular en la empresa (Multi-usuario)
+   */
+  private async startAddUserFlow(tenantUser: any, rawFrom: string): Promise<void> {
+    const cleanPhone = tenantUser.phoneNumber;
+    const maxUsers = tenantUser.tenant.plan?.maxUsers || 1;
+
+    const currentUsersCount = await prisma.tenantUser.count({
+      where: { tenantId: tenantUser.tenantId },
+    });
+
+    if (currentUsersCount >= maxUsers) {
+      await whatsappService.sendText(
+        rawFrom,
+        `⚠️ *Límite de celulares alcanzado.*\n\nTu plan actual (*${tenantUser.tenant.plan?.name}*) permite hasta *${maxUsers} celulares* autorizados y ya tienes ${currentUsersCount} registrados.\n\nPara autorizar más celulares, escribe *"Planes"* o consulta por el Plan Ultra.`
+      );
+      return;
+    }
+
+    await prisma.conversationSession.upsert({
+      where: { phoneNumber: cleanPhone },
+      update: {
+        state: 'ADD_USER_PHONE',
+        contextData: { tenantId: tenantUser.tenantId, maxUsers, currentUsersCount },
+      },
+      create: {
+        phoneNumber: cleanPhone,
+        state: 'ADD_USER_PHONE',
+        contextData: { tenantId: tenantUser.tenantId, maxUsers, currentUsersCount },
+      },
+    });
+
+    const msg = `📱 *Alta de Celular Autorizado*\n\n` +
+      `Tu *${tenantUser.tenant.plan?.name}* permite hasta *${maxUsers} celulares* vinculados a *${tenantUser.tenant.businessName}* (actualmente ${currentUsersCount}/${maxUsers} activos).\n\n` +
+      `Por favor, escribe el *número de WhatsApp* del nuevo celular a autorizar (con código de área, ej: 2644758321 o 5491123456789):`;
+
+    await whatsappService.sendText(rawFrom, msg);
+  }
+
+  /**
+   * Maneja los pasos para autorizar un nuevo celular (teléfono y nombre)
+   */
+  private async handleAddUserStep(
+    tenantUser: any,
+    session: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const ctx = (session.contextData as any) || {};
+
+    // Paso 1: Recibe Número de Celular
+    if (session.state === 'ADD_USER_PHONE') {
+      const cleanDigits = text.replace(/\D/g, '');
+
+      if (cleanDigits.length < 8) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ *Número inválido.* Por favor ingresa un número de teléfono o celular válido (ej: 2644758321 o 5491123456789):'
+        );
+        return;
+      }
+
+      // Normalizar formato estándar argentino si no tiene código de país
+      let normalizedPhone = cleanDigits;
+      if (normalizedPhone.length === 10) {
+        normalizedPhone = `549${normalizedPhone}`;
+      } else if (normalizedPhone.length === 11 && normalizedPhone.startsWith('9')) {
+        normalizedPhone = `54${normalizedPhone}`;
+      }
+
+      // Validar si ya existe
+      const existingUser = await prisma.tenantUser.findUnique({
+        where: { phoneNumber: normalizedPhone },
+        include: { tenant: true },
+      });
+
+      if (existingUser) {
+        if (existingUser.tenantId === tenantUser.tenantId) {
+          await whatsappService.sendText(
+            rawFrom,
+            `⚠️ El número *+${normalizedPhone}* ya está registrado en tu empresa para *${existingUser.fullName}*.\n\nPor favor ingresa otro número diferente:`
+          );
+        } else {
+          await whatsappService.sendText(
+            rawFrom,
+            `⚠️ El número *+${normalizedPhone}* ya se encuentra asociado a otra cuenta.\n\nPor favor ingresa otro número:`
+          );
+        }
+        return;
+      }
+
+      ctx.newPhoneNumber = normalizedPhone;
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'ADD_USER_NAME',
+          contextData: ctx,
+        },
+      });
+
+      const namePrompt = `👍 Número validado: *+${normalizedPhone}*\n\n👤 *Nombre y Apellido:*\nPor favor, escribe el nombre y apellido o cargo de la persona que usará este celular (ej: "Mariana Gómez - Administración"):`;
+      await whatsappService.sendText(rawFrom, namePrompt);
+      return;
+    }
+
+    // Paso 2: Recibe Nombre y crea el usuario en la BD
+    if (session.state === 'ADD_USER_NAME') {
+      const fullName = text.trim();
+      if (!fullName) {
+        await whatsappService.sendText(rawFrom, '⚠️ El nombre no puede estar vacío. Por favor escribe el nombre de la persona:');
+        return;
+      }
+
+      const newUser = await prisma.tenantUser.create({
+        data: {
+          tenantId: tenantUser.tenantId,
+          phoneNumber: ctx.newPhoneNumber,
+          fullName: fullName,
+          role: 'OPERATOR',
+          isVerified: true,
+        },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+
+      const successMsg = `🎉 *¡Celular Autorizado con Éxito!*\n\n` +
+        `👤 *Nombre:* ${newUser.fullName}\n` +
+        `📱 *Celular:* +${newUser.phoneNumber}\n` +
+        `🏢 *Empresa:* ${tenantUser.tenant.businessName}\n\n` +
+        `✅ A partir de este momento, ${newUser.fullName} puede enviar fotos de facturas, cargar comprobantes o consultar la grilla desde su propio WhatsApp.`;
+
+      await whatsappService.sendText(rawFrom, successMsg);
+
+      // Intentar enviar mensaje de bienvenida al nuevo celular
+      try {
+        const welcomeNewUser = `👋 *¡Hola ${newUser.fullName}!* Has sido autorizado para operar en el sistema de *Cuentas a Pagar* de *${tenantUser.tenant.businessName}*.\n\n` +
+          `Desde este chat puedes:\n` +
+          `📸 Enviar fotos o PDFs de facturas para carga automática con IA.\n` +
+          `📝 Escribir *"Cargar factura"* para registrar boletas en papel.\n` +
+          `📋 Escribir *"Pagos"* para consultar la grilla de pagos semanal.\n\n` +
+          `_Escribe *"Menu"* o *"Ayuda"* en cualquier momento para ver las opciones disponibles._`;
+
+        await whatsappService.sendText(newUser.phoneNumber, welcomeNewUser);
+      } catch (err) {
+        console.warn('[BotService] No se pudo enviar mensaje directo al nuevo celular:', err);
+      }
+
+      return;
+    }
+  }
+
+  /**
+   * Inicia el flujo conversacional para registrar el pago de una factura pendiente
+   */
+  private async startRegisterPaymentFlow(tenantUser: any, rawFrom: string): Promise<void> {
+    const suppliersWithPending = await prisma.supplier.findMany({
+      where: {
+        tenantId: tenantUser.tenantId,
+        invoices: {
+          some: {
+            status: { in: ['EN_GRILLA', 'PENDIENTE', 'APROBADA'] },
+          },
+        },
+      },
+      include: {
+        invoices: {
+          where: {
+            status: { in: ['EN_GRILLA', 'PENDIENTE', 'APROBADA'] },
+          },
+          orderBy: { dueDate: 'asc' },
+        },
+        category: true,
+      },
+      orderBy: { businessName: 'asc' },
+    });
+
+    if (suppliersWithPending.length === 0) {
+      await whatsappService.sendText(
+        rawFrom,
+        '🎉 *¡Excelente! No tienes facturas pendientes de pago en tu grilla.* Todas las facturas se encuentran al día.'
+      );
+      return;
+    }
+
+    let msg = `💸 *Registrar Pago de Factura*\n\nSelecciona el *Proveedor* al que le realizaste el pago:\n\n`;
+    suppliersWithPending.forEach((s, idx) => {
+      const totalPendingAmt = s.invoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
+      const formattedAmt = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(totalPendingAmt);
+      const invCount = s.invoices.length;
+      msg += `${idx + 1}️⃣ *${s.businessName}* (${invCount} ${invCount === 1 ? 'factura pendiente' : 'facturas pendientes'} — Total: ${formattedAmt})\n`;
+    });
+    msg += `\n_Responde con el número de la lista o escribe el nombre del proveedor:_`;
+
+    await prisma.conversationSession.upsert({
+      where: { phoneNumber: tenantUser.phoneNumber },
+      update: {
+        state: 'PAYMENT_REG_SUPPLIER',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          suppliers: suppliersWithPending.map((s) => ({ id: s.id, name: s.businessName })),
+        },
+      },
+      create: {
+        phoneNumber: tenantUser.phoneNumber,
+        state: 'PAYMENT_REG_SUPPLIER',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          suppliers: suppliersWithPending.map((s) => ({ id: s.id, name: s.businessName })),
+        },
+      },
+    });
+
+    await whatsappService.sendText(rawFrom, msg);
+  }
+
+  /**
+   * Maneja la selección del proveedor y luego la factura a marcar como pagada
+   */
+  private async handleRegisterPaymentStep(
+    tenantUser: any,
+    session: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const ctx = (session.contextData as any) || {};
+
+    // Paso 1: Selección de Proveedor
+    if (session.state === 'PAYMENT_REG_SUPPLIER') {
+      const input = text.trim().toLowerCase();
+      const suppliersList: { id: string; name: string }[] = ctx.suppliers || [];
+
+      let selectedSupplier: { id: string; name: string } | undefined;
+
+      const num = parseInt(input, 10);
+      if (!isNaN(num) && num >= 1 && num <= suppliersList.length) {
+        selectedSupplier = suppliersList[num - 1];
+      } else {
+        selectedSupplier = suppliersList.find((s) => s.name.toLowerCase().includes(input));
+      }
+
+      if (!selectedSupplier) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ Proveedor no reconocido. Por favor responde con el *número* de la lista o el nombre del proveedor:'
+        );
+        return;
+      }
+
+      const pendingInvoices = await prisma.invoice.findMany({
+        where: {
+          tenantId: tenantUser.tenantId,
+          supplierId: selectedSupplier.id,
+          status: { in: ['EN_GRILLA', 'PENDIENTE', 'APROBADA'] },
+        },
+        orderBy: { dueDate: 'asc' },
+      });
+
+      if (pendingInvoices.length === 0) {
+        await prisma.conversationSession.delete({ where: { id: session.id } });
+        await whatsappService.sendText(
+          rawFrom,
+          `👍 *${selectedSupplier.name}* ya no tiene facturas pendientes de pago registradas.`
+        );
+        return;
+      }
+
+      let invMsg = `🧾 *Facturas Pendientes de ${selectedSupplier.name}:*\n\n`;
+      pendingInvoices.forEach((inv, idx) => {
+        const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(inv.amount));
+        const dueStr = inv.dueDate.toLocaleDateString('es-AR');
+        invMsg += `${idx + 1}️⃣ *${inv.invoiceType} Nº ${inv.invoiceNumber}*\n`;
+        invMsg += `   💵 Monto: ${amtStr} — 📅 Vencimiento: ${dueStr}\n\n`;
+      });
+      invMsg += `_Responde con el número de la factura que deseas registrar como pagada:_`;
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'PAYMENT_REG_INVOICE',
+          contextData: {
+            tenantId: tenantUser.tenantId,
+            supplierId: selectedSupplier.id,
+            supplierName: selectedSupplier.name,
+            invoices: pendingInvoices.map((i) => ({
+              id: i.id,
+              number: i.invoiceNumber,
+              type: i.invoiceType,
+              amount: Number(i.amount),
+            })),
+          },
+        },
+      });
+
+      await whatsappService.sendText(rawFrom, invMsg);
+      return;
+    }
+
+    // Paso 2: Selección de Factura y Marcado como Pagada
+    if (session.state === 'PAYMENT_REG_INVOICE') {
+      const input = text.trim().toLowerCase();
+      const invoicesList: { id: string; number: string; type: string; amount: number }[] = ctx.invoices || [];
+
+      let selectedInvoice: { id: string; number: string; type: string; amount: number } | undefined;
+
+      const num = parseInt(input, 10);
+      if (!isNaN(num) && num >= 1 && num <= invoicesList.length) {
+        selectedInvoice = invoicesList[num - 1];
+      } else {
+        selectedInvoice = invoicesList.find((i) => i.number.toLowerCase().includes(input));
+      }
+
+      if (!selectedInvoice) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ Factura no reconocida. Por favor responde con el *número* de la lista:'
+        );
+        return;
+      }
+
+      const updated = await prisma.invoice.update({
+        where: { id: selectedInvoice.id },
+        data: {
+          status: 'PAGADA',
+        },
+        include: {
+          supplier: true,
+          tenant: true,
+        },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+
+      const amtFormatted = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(updated.amount));
+      const payDateStr = new Date().toLocaleDateString('es-AR');
+
+      const canSendReceipt =
+        tenantUser.tenant.plan?.hasSupplierReceipts ||
+        tenantUser.tenant.plan?.code === 'PROFESSIONAL' ||
+        tenantUser.tenant.plan?.code === 'ULTRA';
+
+      const hasSupplierPhone =
+        updated.supplier.phone &&
+        updated.supplier.phone.trim().length >= 8 &&
+        !updated.supplier.phone.toLowerCase().includes('sin teléfono');
+
+      if (canSendReceipt && hasSupplierPhone) {
+        const confirmWithReceipt = `🎉 *¡Pago Registrado Exitosamente!*
+
+🏢 *Proveedor:* ${updated.supplier.businessName}
+🧾 *Comprobante:* ${updated.invoiceType} Nº ${updated.invoiceNumber}
+💰 *Monto Pagado:* ${amtFormatted}
+📅 *Fecha de Pago:* ${payDateStr}
+
+_El comprobante quedó marcado como PAGADO en tu grilla y Dashboard._
+
+¿Deseas enviar la constancia de pago formal por WhatsApp a *${updated.supplier.businessName}* (+${updated.supplier.phone})?`;
+
+        await whatsappService.sendButtons(rawFrom, confirmWithReceipt, [
+          { id: `enviar_comprobante_${updated.id}`, text: 'Enviar Comprobante' },
+          { id: 'no_enviar_comprobante', text: 'No enviar' },
+        ]);
+      } else {
+        const simpleConfirm = `🎉 *¡Pago Registrado Exitosamente!*
+
+🏢 *Proveedor:* ${updated.supplier.businessName}
+🧾 *Comprobante:* ${updated.invoiceType} Nº ${updated.invoiceNumber}
+💰 *Monto Pagado:* ${amtFormatted}
+📅 *Fecha de Pago:* ${payDateStr}
+
+_El comprobante quedó marcado como PAGADO en tu grilla y Dashboard._`;
+
+        await whatsappService.sendText(rawFrom, simpleConfirm);
+      }
+
+      return;
+    }
+  }
+
+  /**
+   * Envía un mensaje formal de comprobante de pago al WhatsApp del proveedor
+   */
+  private async sendSupplierPaymentReceipt(tenantUser: any, rawFrom: string, invoiceId: string): Promise<void> {
+    const invoice = await prisma.invoice.findFirst({
+      where: { id: invoiceId, tenantId: tenantUser.tenantId },
+      include: { supplier: true, tenant: true },
+    });
+
+    if (!invoice) {
+      await whatsappService.sendText(rawFrom, '⚠️ No se encontró la factura solicitada.');
+      return;
+    }
+
+    if (!invoice.supplier.phone || invoice.supplier.phone.length < 8) {
+      await whatsappService.sendText(rawFrom, '⚠️ El proveedor no tiene un número de teléfono válido registrado.');
+      return;
+    }
+
+    const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(invoice.amount));
+    const dateStr = new Date().toLocaleDateString('es-AR');
+
+    const receiptMessage = `📄 *Constancia de Pago — ${invoice.tenant.businessName}*
+
+Estimado/a *${invoice.supplier.businessName}*,
+Le informamos que se ha registrado el pago de su comprobante:
+
+🧾 *Comprobante:* ${invoice.invoiceType} Nº ${invoice.invoiceNumber}
+💰 *Monto Abonado:* ${amtStr}
+📅 *Fecha de Pago:* ${dateStr}
+
+_Este mensaje es un comprobante automático emitido por ${invoice.tenant.businessName}._`;
+
+    try {
+      await whatsappService.sendText(invoice.supplier.phone, receiptMessage);
+      await whatsappService.sendText(
+        rawFrom,
+        `📲 *¡Comprobante enviado con éxito!*\nSe notificó a *${invoice.supplier.businessName}* al número +${invoice.supplier.phone}.`
+      );
+    } catch (err: any) {
+      console.error('[BotService] Error enviando comprobante a proveedor:', err);
+      await whatsappService.sendText(
+        rawFrom,
+        `⚠️ Hubo un inconveniente al enviar el mensaje al proveedor (+${invoice.supplier.phone}). Verifique que el número cuente con WhatsApp activo.`
+      );
+    }
+  }
+
+  /**
+   * Genera el reporte de compras y gastos acumulados por Rubro / Categoría
+   */
+  private async handleRubrosMetrics(tenantUser: any, rawFrom: string): Promise<void> {
+    const suppliers = await prisma.supplier.findMany({
+      where: { tenantId: tenantUser.tenantId },
+      include: {
+        category: true,
+        invoices: true,
+      },
+    });
+
+    if (suppliers.length === 0) {
+      await whatsappService.sendText(rawFrom, '📊 *Aún no tienes proveedores ni facturas registradas para generar métricas.*');
+      return;
+    }
+
+    const rubroMap: Record<string, { total: number; count: number; suppliers: Set<string> }> = {};
+    let grandTotal = 0;
+    let totalInvoices = 0;
+
+    suppliers.forEach((s) => {
+      const catName = s.category?.name || 'General';
+      if (!rubroMap[catName]) {
+        rubroMap[catName] = { total: 0, count: 0, suppliers: new Set() };
+      }
+      rubroMap[catName].suppliers.add(s.businessName);
+
+      s.invoices.forEach((inv) => {
+        const amt = Number(inv.amount);
+        rubroMap[catName].total += amt;
+        rubroMap[catName].count += 1;
+        grandTotal += amt;
+        totalInvoices += 1;
+      });
+    });
+
+    let msg = `📊 *Métricas y Gastos por Rubro — ${tenantUser.tenant.businessName}*\n\n`;
+    const sortedRubros = Object.entries(rubroMap).sort((a, b) => b[1].total - a[1].total);
+
+    sortedRubros.forEach(([rubro, data]) => {
+      const formatted = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(data.total);
+      const percentage = grandTotal > 0 ? ((data.total / grandTotal) * 100).toFixed(1) : '0';
+      msg += `🏷️ *${rubro}:* ${formatted} (${percentage}%)\n`;
+      msg += `   • ${data.count} ${data.count === 1 ? 'comprobante' : 'comprobantes'} (${data.suppliers.size} ${data.suppliers.size === 1 ? 'proveedor' : 'proveedores'})\n\n`;
+    });
+
+    const totalFormatted = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(grandTotal);
+    msg += `💰 *Gasto Total Acumulado:* ${totalFormatted}\n`;
+    msg += `🧾 *Total de Comprobantes:* ${totalInvoices}\n\n`;
+    msg += `💡 _Para ver los gráficos interactivos, escribe *"Dashboard"*.`;
+
+    await whatsappService.sendText(rawFrom, msg);
+  }
+
+  /**
+   * Muestra la información explicativa sobre cómo funciona el envío de comprobantes a proveedores
+   */
+  private async handleSupplierReceiptsInfo(tenantUser: any, rawFrom: string): Promise<void> {
+    const msg = `📲 *Envío de Comprobantes a Proveedores*\n\n` +
+      `Con tu *${tenantUser.tenant.plan?.name}*, el sistema envía automáticamente una constancia formal de pago directo al WhatsApp de tu proveedor.\n\n` +
+      `*¿Cómo se utiliza?*\n` +
+      `1️⃣ Cuando realices una transferencia a un proveedor, escribe *"Registrar pago"*.\n` +
+      `2️⃣ Selecciona la factura abonada.\n` +
+      `3️⃣ El sistema te preguntará si deseas notificar al proveedor y le enviará el comprobante al instante con el detalle del pago.\n\n` +
+      `👉 _Escribe *"Registrar pago"* para asentar un pago y enviar el comprobante._`;
 
     await whatsappService.sendText(rawFrom, msg);
   }

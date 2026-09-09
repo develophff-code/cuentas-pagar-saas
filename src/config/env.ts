@@ -11,6 +11,10 @@ const envSchema = z.object({
   WAHA_API_KEY: z.string().default(''),
   WAHA_SESSION: z.string().default('default'),
   GEMINI_API_KEY: z.string().default(''),
+  APP_BASE_URL: z.string().default('http://localhost:4000'),
+  WHATSAPP_PROVIDER: z.string().default('ycloud'),
+  YCLOUD_API_KEY: z.string().optional(),
+  YCLOUD_PHONE_NUMBER: z.string().optional(),
   MERCADOPAGO_ACCESS_TOKEN: z.string().optional(),
   MERCADOPAGO_WEBHOOK_SECRET: z.string().optional(),
 });
