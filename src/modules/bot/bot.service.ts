@@ -1909,18 +1909,42 @@ Le informamos que se ha registrado el pago de su comprobante:
 
 _Este mensaje es un comprobante automático emitido por ${invoice.tenant.businessName}._`;
 
+    // Intentar primero con la Plantilla Oficial de Meta (llega aunque el proveedor nunca haya escrito al bot)
+    const templateName = env.YCLOUD_PAYMENT_TEMPLATE_NAME;
+    const templateLang = env.YCLOUD_TEMPLATE_LANG;
+
     try {
-      await whatsappService.sendText(invoice.supplier.phone, receiptMessage);
+      await whatsappService.sendTemplate(invoice.supplier.phone, templateName, templateLang, [
+        invoice.supplier.businessName,
+        invoice.tenant.businessName,
+        `${invoice.invoiceType} Nº ${invoice.invoiceNumber}`,
+        amtStr,
+        dateStr,
+      ]);
+
       await whatsappService.sendText(
         rawFrom,
         `📲 *¡Comprobante enviado con éxito!*\nSe notificó a *${invoice.supplier.businessName}* al número +${invoice.supplier.phone}.`
       );
-    } catch (err: any) {
-      console.error('[BotService] Error enviando comprobante a proveedor:', err);
-      await whatsappService.sendText(
-        rawFrom,
-        `⚠️ Hubo un inconveniente al enviar el mensaje al proveedor (+${invoice.supplier.phone}). Verifique que el número cuente con WhatsApp activo.`
+    } catch (templateErr: any) {
+      console.warn(
+        '[BotService] No se pudo enviar con plantilla (quizás aún no aprobada). Intentando fallback con texto libre:',
+        templateErr?.response?.data || templateErr?.message
       );
+
+      try {
+        await whatsappService.sendText(invoice.supplier.phone, receiptMessage);
+        await whatsappService.sendText(
+          rawFrom,
+          `📲 *¡Comprobante enviado con éxito!*\nSe notificó a *${invoice.supplier.businessName}* al número +${invoice.supplier.phone}.`
+        );
+      } catch (err: any) {
+        console.error('[BotService] Error enviando comprobante a proveedor:', err?.response?.data || err?.message);
+        await whatsappService.sendText(
+          rawFrom,
+          `⚠️ No se pudo entregar el mensaje al proveedor (+${invoice.supplier.phone}). Verifique que la plantilla esté aprobada en YCloud o que el número cuente con WhatsApp activo.`
+        );
+      }
     }
   }
 

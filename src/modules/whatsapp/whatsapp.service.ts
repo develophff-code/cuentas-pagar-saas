@@ -20,6 +20,19 @@ export class WhatsAppService {
     return ycloudClient.sendButtons(to, title, buttons);
   }
 
+  async sendTemplate(
+    to: string,
+    templateName: string,
+    languageCode: string = 'es',
+    bodyParameters: string[] = []
+  ): Promise<any> {
+    if (this.provider === 'waha') {
+      const fallbackText = `[Notificación ${templateName}]: ${bodyParameters.join(' - ')}`;
+      return wahaClient.sendText(to, fallbackText);
+    }
+    return ycloudClient.sendTemplate(to, templateName, languageCode, bodyParameters);
+  }
+
   async downloadMedia(mediaUrlOrId: string): Promise<{ buffer: Buffer; mimeType: string }> {
     if (this.provider === 'waha') {
       return wahaClient.downloadMedia(mediaUrlOrId);

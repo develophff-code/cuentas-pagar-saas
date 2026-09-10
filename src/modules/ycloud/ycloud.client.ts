@@ -46,6 +46,54 @@ export class YcloudClient {
   }
 
   /**
+   * Envía un mensaje de plantilla oficial (Template HSM) vía YCloud / WhatsApp Cloud API
+   * Permite iniciar conversaciones hacia proveedores aún fuera de la ventana de 24 horas.
+   */
+  async sendTemplate(
+    to: string,
+    templateName: string,
+    languageCode: string = 'es',
+    bodyParameters: string[] = []
+  ): Promise<any> {
+    const formattedTo = this.formatPhone(to);
+
+    const payload: any = {
+      from: this.fromNumber,
+      to: formattedTo,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: {
+          code: languageCode,
+        },
+      },
+    };
+
+    if (bodyParameters.length > 0) {
+      payload.template.components = [
+        {
+          type: 'body',
+          parameters: bodyParameters.map((param) => ({
+            type: 'text',
+            text: param,
+          })),
+        },
+      ];
+    }
+
+    try {
+      const response = await this.api.post('/whatsapp/messages', payload);
+      return response.data;
+    } catch (error: any) {
+      console.error(
+        `[YcloudClient] Error enviando plantilla ${templateName} a ${formattedTo}:`,
+        error?.response?.data || error.message
+      );
+      throw error;
+    }
+  }
+
+  /**
    * Envía un mensaje interactivo con botones de respuesta rápida (hasta 3 botones en Meta)
    */
   async sendButtons(to: string, bodyText: string, buttons: { id: string; text: string }[]): Promise<any> {
@@ -121,14 +169,39 @@ export class YcloudClient {
   }
 
   /**
-   * Limpia y formatea el número a formato E.164 (+549...)
+   * Limpia y formatea el número a formato internacional E.164 (+549...)
    */
   public formatPhone(phone: string): string {
-    let clean = phone.replace(/@c\.us/g, '').replace(/[^0-9+]/g, '');
-    if (!clean.startsWith('+')) {
-      clean = `+${clean}`;
+    let clean = phone.replace(/@c\.us/g, '').replace(/[^0-9]/g, '');
+
+    // Si ya empieza con 549 y tiene 13 dígitos (+54 9 11 xxxx xxxx)
+    if (clean.startsWith('549')) {
+      return `+${clean}`;
     }
-    return clean;
+
+    // Si empieza con 54 pero le falta el 9 móvil (ej: 5411xxxxxxxx con 12 dígitos)
+    if (clean.startsWith('54') && clean.length === 12) {
+      clean = `549${clean.slice(2)}`;
+      return `+${clean}`;
+    }
+
+    // Si empieza con 0 (ej: 011xxxxxxxx o 0351xxxxxxx)
+    if (clean.startsWith('0')) {
+      clean = clean.slice(1);
+    }
+
+    // Si empieza con 15 local (ej: 1544445555)
+    if (clean.startsWith('15') && clean.length === 10) {
+      clean = `11${clean.slice(2)}`;
+    }
+
+    // Si es un número local de 10 dígitos (ej: 1144445555 o 351xxxxxxx)
+    if (clean.length === 10) {
+      clean = `549${clean}`;
+      return `+${clean}`;
+    }
+
+    return clean.startsWith('+') ? clean : `+${clean}`;
   }
 }
 

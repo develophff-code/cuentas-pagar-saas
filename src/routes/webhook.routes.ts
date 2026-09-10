@@ -37,6 +37,21 @@ export const webhookRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
   fastify.post('/api/webhook/ycloud', async (request, reply) => {
     const body: any = request.body;
 
+    // Actualización de estado de mensajes salientes (entregado, leído o fallido)
+    if (body?.type === 'whatsapp.message.updated' || body?.whatsappMessage) {
+      const msgUpdate = body?.whatsappMessage || body;
+      if (msgUpdate?.status === 'failed') {
+        fastify.log.error(
+          `[YCloud Status] ❌ Mensaje saliente a ${msgUpdate.to} FALLÓ. Código: ${msgUpdate.errorCode || ''} - ${msgUpdate.errorMessage || JSON.stringify(msgUpdate.error || {})}`
+        );
+      } else {
+        fastify.log.info(
+          `[YCloud Status] ℹ️ Mensaje a ${msgUpdate?.to} actualizado a estado: ${msgUpdate?.status}`
+        );
+      }
+      return reply.status(200).send({ received: true });
+    }
+
     // YCloud envía eventos con tipo 'whatsapp.inbound_message.received'
     // o el objeto whatsappInboundMessage directamente
     const inboundMsg = body?.whatsappInboundMessage || body;

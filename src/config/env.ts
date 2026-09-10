@@ -15,6 +15,8 @@ const envSchema = z.object({
   WHATSAPP_PROVIDER: z.string().default('ycloud'),
   YCLOUD_API_KEY: z.string().optional(),
   YCLOUD_PHONE_NUMBER: z.string().optional(),
+  YCLOUD_PAYMENT_TEMPLATE_NAME: z.string().default('template_utility_20260910091300'),
+  YCLOUD_TEMPLATE_LANG: z.string().default('es_AR'),
   MERCADOPAGO_ACCESS_TOKEN: z.string().optional(),
   MERCADOPAGO_WEBHOOK_SECRET: z.string().optional(),
 });
