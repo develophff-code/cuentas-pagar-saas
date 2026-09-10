@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
@@ -82,6 +83,37 @@ async function main() {
     pro: proPlan.name,
     ultra: ultraPlan.name,
   });
+
+  // 4. Categorías / Rubros comerciales base globales
+  console.log('🌱 Sembrando categorías maestras...');
+  const defaultCategories = [
+    'Mercadería y Materias Primas',
+    'Servicios Públicos (Luz, Gas, Agua, Internet)',
+    'Impuestos y Tasas',
+    'Alquileres y Expensas',
+    'Logística y Fletes',
+    'Mantenimiento y Limpieza',
+    'Honorarios Profesionales',
+    'Librería e Insumos de Oficina',
+    'Publicidad y Marketing',
+    'Gastos Generales',
+  ];
+
+  for (const catName of defaultCategories) {
+    const existing = await prisma.category.findFirst({
+      where: { name: catName, tenantId: null },
+    });
+    if (!existing) {
+      await prisma.category.create({
+        data: {
+          name: catName,
+          tenantId: null,
+        },
+      });
+    }
+  }
+
+  console.log(`✅ ${defaultCategories.length} categorías maestras sembradas con éxito.`);
 }
 
 main()
