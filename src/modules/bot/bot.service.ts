@@ -366,23 +366,47 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
       ctx.businessName = businessName;
 
       // Obtener categorías existentes (globales del catálogo o propias de la empresa)
-      const categories = await prisma.category.findMany({
+      const PREFERRED_CATEGORIES = [
+        'Mercadería y Materias Primas',
+        'Servicios Públicos (Luz, Gas, Agua, Internet)',
+        'Impuestos y Tasas',
+        'Alquileres y Expensas',
+        'Logística y Fletes',
+        'Mantenimiento y Limpieza',
+        'Honorarios Profesionales',
+        'Librería e Insumos de Oficina',
+        'Publicidad y Marketing',
+        'Gastos Generales',
+      ];
+
+      const allCategories = await prisma.category.findMany({
         where: {
           OR: [{ tenantId: null }, { tenantId: tenantUser.tenantId }],
         },
-        orderBy: { name: 'asc' },
+      });
+
+      // Ordenar respetando el orden preferido (1 al 10) y luego las personalizadas
+      const sortedCategories = allCategories.sort((a, b) => {
+        const idxA = PREFERRED_CATEGORIES.indexOf(a.name);
+        const idxB = PREFERRED_CATEGORIES.indexOf(b.name);
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        return a.name.localeCompare(b.name);
       });
 
       let categoryPrompt = `👍 *Nombre:* ${businessName}\n\n🏷️ *Rubro o Categoría (Obligatorio):*\n`;
-      if (categories.length > 0) {
-        categoryPrompt += `Puedes elegir una de tus categorías existentes o escribir una nueva:\n`;
-        categories.forEach((c) => {
-          categoryPrompt += `• ${c.name}\n`;
+      if (sortedCategories.length > 0) {
+        categoryPrompt += `Selecciona el *número* del rubro correspondiente:\n\n`;
+        sortedCategories.forEach((c, idx) => {
+          categoryPrompt += `${idx + 1}️⃣ ${c.name}\n`;
         });
+        categoryPrompt += `\n_Responde con el número de la categoría (ej: 1) o escribe un nuevo rubro:_`;
       } else {
         categoryPrompt += `Escribe el rubro o categoría comercial (ej: Ferretería, Insumos, Alimentos, etc.):\n`;
       }
-      categoryPrompt += `\n_Escribe el nombre del rubro:_`;
+
+      ctx.categoriesList = sortedCategories.map((c) => ({ id: c.id, name: c.name }));
 
       await prisma.conversationSession.update({
         where: { id: session.id },
@@ -398,27 +422,56 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
 
     // Paso 2: Recibe Rubro -> Pide Teléfono (Obligatorio)
     if (session.state === 'SUPPLIER_REG_CATEGORY') {
-      const categoryName = text.trim();
-      if (!categoryName) {
-        await whatsappService.sendText(rawFrom, '⚠️ El rubro es obligatorio. Por favor ingresa el nombre de la categoría:');
+      const input = text.trim();
+      if (!input) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ El rubro es obligatorio. Por favor responde con el número o nombre de la categoría:'
+        );
         return;
       }
 
-      // Buscar o crear la categoría
-      let category = await prisma.category.findFirst({
-        where: {
-          name: { equals: categoryName, mode: 'insensitive' },
-          OR: [{ tenantId: null }, { tenantId: tenantUser.tenantId }],
-        },
-      });
+      const categoriesList: { id: string; name: string }[] = ctx.categoriesList || [];
+      let category: any = null;
 
-      if (!category) {
-        category = await prisma.category.create({
-          data: {
-            tenantId: tenantUser.tenantId,
-            name: categoryName,
+      // 1. Verificar si respondió con un número de la lista (ej: 1, 2, 10)
+      const num = parseInt(input, 10);
+      if (!isNaN(num)) {
+        if (num >= 1 && num <= categoriesList.length) {
+          const selected = categoriesList[num - 1];
+          category = await prisma.category.findUnique({ where: { id: selected.id } });
+        } else {
+          await whatsappService.sendText(
+            rawFrom,
+            `⚠️ Opción no válida. Por favor responde con un número del 1 al ${categoriesList.length} o escribe el nombre del rubro:`
+          );
+          return;
+        }
+      } else {
+        // 2. Si escribió texto, buscar por coincidencia de nombre o crear nueva categoría
+        category = await prisma.category.findFirst({
+          where: {
+            name: { equals: input, mode: 'insensitive' },
+            OR: [{ tenantId: null }, { tenantId: tenantUser.tenantId }],
           },
         });
+
+        if (!category) {
+          category = await prisma.category.create({
+            data: {
+              tenantId: tenantUser.tenantId,
+              name: input,
+            },
+          });
+        }
+      }
+
+      if (!category) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ No se pudo asignar la categoría. Por favor escribe el número o nombre del rubro:'
+        );
+        return;
       }
 
       ctx.categoryId = category.id;
