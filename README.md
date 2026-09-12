@@ -11,15 +11,37 @@ Plataforma SaaS operada de forma nativa a través de **WhatsApp** (vía **YCloud
 ## 🚀 Funcionalidades Principales
 
 1. 📸 **Carga Automática con IA (Fotos y PDFs):** Envío directo de fotos o archivos PDF de facturas/tickets. Google Gemini 2.0 Flash extrae: CUIT emisor, Razón Social, Tipo y Número de Comprobante, Fecha de Vencimiento, Monto Total, IVA, CBU/CVU/Alias bancario y clasificación automática por Rubro.
-2. 🏢 **Gestión de Proveedores:** Alta guiada paso a paso de proveedores (CUIT, Razón Social, CBU/CVU/Alias, Categoría y Teléfono de contacto).
-3. 🧾 **Carga Manual de Comprobantes:** Registro manual alternativo de facturas o tickets con asignación a proveedor existente.
-4. 📅 **Grilla Semanal de Pagos:** Asignación inteligente a los días de pago preferidos de la empresa (ej. Martes y Jueves) previos al vencimiento para evitar mora.
-5. 💳 **Registrador de Pagos & Envío de Constancias:** Flujo guiado para asentar pagos realizados. Permite despachar automáticamente una constancia formal de pago vía WhatsApp directo al número del proveedor.
-6. 🌐 **Dashboard Web en Tiempo Real:** Interfaz responsiva con métricas clave (Total a pagar en 7 días, vencidos, pendientes, pagados), desglose por rubro y tabla detallada de comprobantes.
-7. 👥 **Multi-usuario por Empresa (Planes Profesional y Ultra):** Autorización de hasta 3 números celulares por tenant con roles compartidos.
-8. 📊 **Métricas por Rubro:** Resumen consolidado directo en WhatsApp de compras y gastos acumulados por categoría comercial.
-9. 📲 **Envío Automatizado a Proveedores:** Notificación inmediata con detalle del pago acreditado.
-10. 🧠 **Consultas Financieras con IA (Plan Ultra):** Asesor analítico en lenguaje natural sobre finanzas, tendencias de gasto y sugerencias de optimización de flujo de fondos.
+2. 🏢 **Gestión y Edición de Proveedores:** Alta guiada y modificación conversacional de proveedores (Razón Social, Rubro del 1 al 10, Celular/WhatsApp y CBU/Alias).
+3. 🧾 **Carga Manual y Modificación de Facturas:** Registro y corrección de comprobantes (monto, fecha de vencimiento, tipo y número). Al cambiar el vencimiento, la fecha de pago en grilla se recalcula automáticamente.
+4. 🚫 **Anulación y Reversión de Pagos:** Anulación de comprobantes cargados por error (`CANCELADA`) y reversión de pagos registrados por equivocación (`EN_GRILLA`) con confirmación interactiva.
+5. 📅 **Grilla Semanal de Pagos & Configuración:** Asignación inteligente a los días de corte de la empresa (ej. Martes y Jueves). Si la empresa modifica sus días de pago, todas las facturas en grilla se reprograman de forma automática.
+6. 💳 **Registrador de Pagos & Envío de Constancias:** Flujo guiado para asentar pagos realizados y despacho automático de constancia formal de pago vía WhatsApp directo al número del proveedor.
+7. 🌐 **Dashboard Web en Tiempo Real:** Interfaz responsiva con métricas clave (Total a pagar en 7 días, vencidos, pendientes, pagados, anulados), desglose por rubro y tabla interactiva.
+8. 👥 **Multi-usuario por Empresa (Planes Profesional y Ultra):** Autorización de hasta 3 números celulares por tenant con roles compartidos.
+9. 📊 **Métricas por Rubro:** Resumen consolidado directo en WhatsApp de compras y gastos acumulados por categoría comercial.
+10. 📲 **Envío Automatizado a Proveedores:** Notificación inmediata con detalle del pago acreditado.
+11. 🧠 **Consultas Financieras con IA (Plan Ultra):** Asesor analítico en lenguaje natural sobre finanzas, tendencias de gasto y sugerencias de optimización de flujo de fondos.
+
+---
+
+## 💬 Comandos Disponibles en WhatsApp
+
+| Comando / Frase | Acción |
+| :--- | :--- |
+| `Menú` o `Ayuda` | Despliega el menú principal con las opciones habilitadas para el plan activo. |
+| `Registrar nuevo proveedor` | Alta guiada de un nuevo proveedor (formal o informal). |
+| `Editar proveedor` | Modificar razón social, rubro comercial, teléfono o CBU/alias de un proveedor. |
+| `Cargar factura` | Carga manual paso a paso de una factura o ticket en papel. |
+| `Editar factura` | Modificar monto, fecha de vencimiento, tipo o número de una factura en grilla. |
+| `Anular factura` | Dar de baja una factura cargada por error (`CANCELADA`). |
+| `Pagos` | Consulta las facturas agendadas en la grilla para los próximos 7 días y el total a pagar. |
+| `Registrar pago` | Asienta el pago de una factura y ofrece enviar el comprobante al WhatsApp del proveedor. |
+| `Revertir pago` | Deshace un pago registrado por equivocación, volviendo la factura a estado `EN_GRILLA`. |
+| `Configurar empresa` / `Días de pago` | Modifica la razón social o los días preferidos de pago (con recálculo automático de la grilla). |
+| `Dashboard` | Genera el enlace de acceso directo al panel web en tiempo real. |
+| `Cargar celular` | Autoriza celulares adicionales del equipo (hasta 3 para Profesional y Ultra). |
+| `Métricas por rubro` | Desglose consolidado de gastos acumulados por rubro comercial (Profesional y Ultra). |
+| *Consulta en lenguaje natural* | Preguntas financieras analizadas con IA (exclusivo Plan Ultra). |
 
 ---
 

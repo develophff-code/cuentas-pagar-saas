@@ -17,6 +17,19 @@ export interface IncomingWahaMessage {
   _data?: any;
 }
 
+export const PREFERRED_CATEGORIES = [
+  'Mercadería y Materias Primas',
+  'Servicios Públicos (Luz, Gas, Agua, Internet)',
+  'Impuestos y Tasas',
+  'Alquileres y Expensas',
+  'Logística y Fletes',
+  'Mantenimiento y Limpieza',
+  'Honorarios Profesionales',
+  'Librería e Insumos de Oficina',
+  'Publicidad y Marketing',
+  'Gastos Generales',
+];
+
 export class BotService {
   /**
    * Manejador principal de mensajes entrantes desde el webhook
@@ -101,8 +114,18 @@ _Apenas se registre el pago, tu cuenta se reactivará de forma inmediata._`;
       return;
     }
 
+    if (activeSession && activeSession.state.startsWith('SUPPLIER_EDIT_')) {
+      await this.handleSupplierEditStep(tenantUser, activeSession, rawFrom, text);
+      return;
+    }
+
     if (activeSession && activeSession.state.startsWith('INVOICE_REG_')) {
       await this.handleManualInvoiceRegistrationStep(tenantUser, activeSession, rawFrom, text);
+      return;
+    }
+
+    if (activeSession && activeSession.state.startsWith('INVOICE_EDIT_')) {
+      await this.handleInvoiceEditStep(tenantUser, activeSession, rawFrom, text);
       return;
     }
 
@@ -118,6 +141,21 @@ _Apenas se registre el pago, tu cuenta se reactivará de forma inmediata._`;
 
     if (activeSession && activeSession.state.startsWith('PAYMENT_REG_')) {
       await this.handleRegisterPaymentStep(tenantUser, activeSession, rawFrom, text);
+      return;
+    }
+
+    if (activeSession && activeSession.state.startsWith('INVOICE_CANCEL_')) {
+      await this.handleInvoiceCancelStep(tenantUser, activeSession, rawFrom, text);
+      return;
+    }
+
+    if (activeSession && activeSession.state.startsWith('PAYMENT_REVERT_')) {
+      await this.handlePaymentRevertStep(tenantUser, activeSession, rawFrom, text);
+      return;
+    }
+
+    if (activeSession && activeSession.state.startsWith('TENANT_EDIT_')) {
+      await this.handleTenantEditStep(tenantUser, activeSession, rawFrom, text);
       return;
     }
 
@@ -366,19 +404,6 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
       ctx.businessName = businessName;
 
       // Obtener categorías existentes (globales del catálogo o propias de la empresa)
-      const PREFERRED_CATEGORIES = [
-        'Mercadería y Materias Primas',
-        'Servicios Públicos (Luz, Gas, Agua, Internet)',
-        'Impuestos y Tasas',
-        'Alquileres y Expensas',
-        'Logística y Fletes',
-        'Mantenimiento y Limpieza',
-        'Honorarios Profesionales',
-        'Librería e Insumos de Oficina',
-        'Publicidad y Marketing',
-        'Gastos Generales',
-      ];
-
       const allCategories = await prisma.category.findMany({
         where: {
           OR: [{ tenantId: null }, { tenantId: tenantUser.tenantId }],
@@ -570,6 +595,470 @@ Por favor, escribe el *Nombre o Razón Social* del proveedor:`;
 💡 *Siguiente paso:* Ya puedes cargarle una factura escribiendo *"Cargar factura"* o enviando una foto/PDF del comprobante.`;
 
       await whatsappService.sendText(rawFrom, finalMsg);
+      return;
+    }
+  }
+
+  /**
+   * Flujo de Modificación / Edición de Proveedor (WhatsApp)
+   */
+  private async startSupplierEditFlow(
+    tenantUser: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const cleanPhone = tenantUser.phoneNumber;
+
+    // Buscar proveedores existentes de la empresa
+    const suppliers = await prisma.supplier.findMany({
+      where: { tenantId: tenantUser.tenantId },
+      include: { category: true, bankAccounts: true },
+      orderBy: { businessName: 'asc' },
+    });
+
+    if (suppliers.length === 0) {
+      await whatsappService.sendText(
+        rawFrom,
+        '⚠️ *Aún no tienes proveedores registrados.* Para registrar uno nuevo, escribe *"Registrar nuevo proveedor"*.'
+      );
+      return;
+    }
+
+    // Verificar si el usuario ya especificó el nombre en el comando (ej: "editar proveedor ferretería")
+    const searchName = text
+      .replace(/^(editar|modificar|actualizar|cambiar)(\s+un)?\s+proveedor\s*/i, '')
+      .trim()
+      .toLowerCase();
+
+    let selectedSupplier = null;
+    if (searchName.length >= 2) {
+      selectedSupplier = suppliers.find(
+        (s) =>
+          s.businessName.toLowerCase() === searchName ||
+          s.businessName.toLowerCase().includes(searchName)
+      );
+    }
+
+    // Si solo hay un proveedor registrado, seleccionarlo directamente
+    if (!selectedSupplier && suppliers.length === 1) {
+      selectedSupplier = suppliers[0];
+    }
+
+    if (selectedSupplier) {
+      await prisma.conversationSession.upsert({
+        where: { phoneNumber: cleanPhone },
+        update: {
+          state: 'SUPPLIER_EDIT_FIELD_SELECT',
+          contextData: {
+            tenantId: tenantUser.tenantId,
+            supplierId: selectedSupplier.id,
+            supplierName: selectedSupplier.businessName,
+          },
+        },
+        create: {
+          phoneNumber: cleanPhone,
+          state: 'SUPPLIER_EDIT_FIELD_SELECT',
+          contextData: {
+            tenantId: tenantUser.tenantId,
+            supplierId: selectedSupplier.id,
+            supplierName: selectedSupplier.businessName,
+          },
+        },
+      });
+
+      await this.sendSupplierEditFieldPrompt(rawFrom, selectedSupplier);
+      return;
+    }
+
+    // Si hay varios proveedores, mostrar la lista numerada
+    let prompt = `📝 *Modificación de Proveedor*\n\nSelecciona el número del proveedor que deseas editar:\n\n`;
+    suppliers.forEach((s, idx) => {
+      prompt += `${idx + 1}️⃣ *${s.businessName}* (${s.category?.name || 'Sin rubro'})\n`;
+    });
+    prompt += `\n_Responde con el número de la lista o escribe el nombre del proveedor (o escribe *Cancelar* para salir):_`;
+
+    await prisma.conversationSession.upsert({
+      where: { phoneNumber: cleanPhone },
+      update: {
+        state: 'SUPPLIER_EDIT_SELECT',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          suppliersList: suppliers.map((s) => ({ id: s.id, name: s.businessName })),
+        },
+      },
+      create: {
+        phoneNumber: cleanPhone,
+        state: 'SUPPLIER_EDIT_SELECT',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          suppliersList: suppliers.map((s) => ({ id: s.id, name: s.businessName })),
+        },
+      },
+    });
+
+    await whatsappService.sendText(rawFrom, prompt);
+  }
+
+  private async sendSupplierEditFieldPrompt(rawFrom: string, supplier: any): Promise<void> {
+    const bank = supplier.bankAccounts?.[0];
+    const bankStr = bank?.alias ? `Alias: ${bank.alias}` : bank?.cbuCvu ? `CBU: ${bank.cbuCvu}` : '_No informado_';
+
+    const msg = `🏢 *Editar Proveedor: ${supplier.businessName}*
+
+1️⃣ *Razón Social / Nombre:* ${supplier.businessName}
+2️⃣ *Rubro / Categoría:* ${supplier.category?.name || 'Sin Rubro'}
+3️⃣ *Teléfono / WhatsApp:* ${supplier.phone}
+4️⃣ *CBU / Alias Bancario:* ${bankStr}
+
+_Responde con el número del dato que deseas modificar (1 al 4) o escribe *Cancelar* para salir:_`;
+
+    await whatsappService.sendText(rawFrom, msg);
+  }
+
+  private async sendSupplierUpdatedConfirmation(
+    rawFrom: string,
+    supplier: any,
+    detail: string
+  ): Promise<void> {
+    const bank = supplier.bankAccounts?.[0];
+    const bankStr = bank?.alias ? `Alias: ${bank.alias}` : bank?.cbuCvu ? `CBU: ${bank.cbuCvu}` : '_No informado_';
+
+    const msg = `✅ *¡Proveedor actualizado con éxito!*
+_${detail}_
+
+🏢 *Razón Social:* ${supplier.businessName}
+🏷️ *Rubro:* ${supplier.category?.name || 'Sin Rubro'}
+📱 *Teléfono:* ${supplier.phone}
+🆔 *CUIT:* ${supplier.cuit || '_No informado_'}
+🏦 *Datos de Pago:* ${bankStr}
+
+💡 _Los pagos y notificaciones futuras utilizarán estos nuevos datos._`;
+
+    await whatsappService.sendText(rawFrom, msg);
+  }
+
+  private async handleSupplierEditStep(
+    tenantUser: any,
+    session: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const ctx = (session.contextData as any) || {};
+    const input = text.trim();
+    const lower = input.toLowerCase();
+
+    // Salida global / Cancelación
+    if (lower === 'cancelar' || lower === 'salir' || lower === 'volver') {
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await whatsappService.sendText(rawFrom, '❌ Operación cancelada. El proveedor no fue modificado.');
+      return;
+    }
+
+    // Paso 1: Selección de proveedor de la lista
+    if (session.state === 'SUPPLIER_EDIT_SELECT') {
+      const suppliersList: { id: string; name: string }[] = ctx.suppliersList || [];
+      let selectedSupplier: any = null;
+
+      const num = parseInt(input, 10);
+      if (!isNaN(num) && num >= 1 && num <= suppliersList.length) {
+        selectedSupplier = await prisma.supplier.findUnique({
+          where: { id: suppliersList[num - 1].id },
+          include: { category: true, bankAccounts: true },
+        });
+      } else {
+        selectedSupplier = await prisma.supplier.findFirst({
+          where: {
+            tenantId: tenantUser.tenantId,
+            businessName: { contains: input, mode: 'insensitive' },
+          },
+          include: { category: true, bankAccounts: true },
+        });
+      }
+
+      if (!selectedSupplier) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ Proveedor no identificado. Por favor responde con el número de la lista o escribe *Cancelar*:'
+        );
+        return;
+      }
+
+      ctx.supplierId = selectedSupplier.id;
+      ctx.supplierName = selectedSupplier.businessName;
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'SUPPLIER_EDIT_FIELD_SELECT',
+          contextData: ctx,
+        },
+      });
+
+      await this.sendSupplierEditFieldPrompt(rawFrom, selectedSupplier);
+      return;
+    }
+
+    // Paso 2: Selección del campo a modificar (1=Nombre, 2=Rubro, 3=Teléfono, 4=CBU/Alias)
+    if (session.state === 'SUPPLIER_EDIT_FIELD_SELECT') {
+      if (input === '1' || lower.includes('nombre') || lower.includes('razon') || lower.includes('razón')) {
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'SUPPLIER_EDIT_VAL_NAME',
+            contextData: ctx,
+          },
+        });
+        await whatsappService.sendText(
+          rawFrom,
+          `✏️ *Modificar Nombre / Razón Social*\n\nEscribe el nuevo nombre para *${ctx.supplierName}*:\n\n_O escribe *Cancelar* para salir._`
+        );
+        return;
+      }
+
+      if (input === '2' || lower.includes('rubro') || lower.includes('categoria') || lower.includes('categoría')) {
+        const allCategories = await prisma.category.findMany({
+          where: {
+            OR: [{ tenantId: null }, { tenantId: tenantUser.tenantId }],
+          },
+        });
+
+        const sortedCategories = allCategories.sort((a, b) => {
+          const idxA = PREFERRED_CATEGORIES.indexOf(a.name);
+          const idxB = PREFERRED_CATEGORIES.indexOf(b.name);
+          if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+          if (idxA !== -1) return -1;
+          if (idxB !== -1) return 1;
+          return a.name.localeCompare(b.name);
+        });
+
+        let catPrompt = `🏷️ *Modificar Rubro / Categoría para ${ctx.supplierName}*\n\nSelecciona el *número* del nuevo rubro correspondiente:\n\n`;
+        sortedCategories.forEach((c, idx) => {
+          catPrompt += `${idx + 1}️⃣ ${c.name}\n`;
+        });
+        catPrompt += `\n_Responde con el número de la categoría (ej: 1) o escribe un nuevo rubro (o *Cancelar*):_`;
+
+        ctx.categoriesList = sortedCategories.map((c) => ({ id: c.id, name: c.name }));
+
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'SUPPLIER_EDIT_VAL_CATEGORY',
+            contextData: ctx,
+          },
+        });
+
+        await whatsappService.sendText(rawFrom, catPrompt);
+        return;
+      }
+
+      if (
+        input === '3' ||
+        lower.includes('telefono') ||
+        lower.includes('teléfono') ||
+        lower.includes('whatsapp') ||
+        lower.includes('celular')
+      ) {
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'SUPPLIER_EDIT_VAL_PHONE',
+            contextData: ctx,
+          },
+        });
+        await whatsappService.sendText(
+          rawFrom,
+          `📱 *Modificar Teléfono / WhatsApp para ${ctx.supplierName}*\n\nIngresa el nuevo número de celular o WhatsApp:\n\n_O escribe *Cancelar* para salir._`
+        );
+        return;
+      }
+
+      if (
+        input === '4' ||
+        lower.includes('cbu') ||
+        lower.includes('alias') ||
+        lower.includes('banco') ||
+        lower.includes('bancario') ||
+        lower.includes('cuenta')
+      ) {
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'SUPPLIER_EDIT_VAL_BANK',
+            contextData: ctx,
+          },
+        });
+        await whatsappService.sendText(
+          rawFrom,
+          `🏦 *Modificar Datos Bancarios para ${ctx.supplierName}*\n\nIngresa el nuevo Alias (ej: "PROVEEDOR.PAGOS") o CBU de 22 dígitos (o ambos):\n\n_Si deseas borrar los datos bancarios responde *Eliminar*, o *Cancelar* para salir._`
+        );
+        return;
+      }
+
+      await whatsappService.sendText(
+        rawFrom,
+        '⚠️ Opción no válida. Responde con un número del 1 al 4 para elegir el dato a modificar (o escribe *Cancelar*):'
+      );
+      return;
+    }
+
+    // Paso 3A: Guardar nuevo nombre
+    if (session.state === 'SUPPLIER_EDIT_VAL_NAME') {
+      const newName = input;
+      if (!newName || newName.length < 2) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ El nombre debe tener al menos 2 caracteres. Por favor escribe el nuevo nombre:'
+        );
+        return;
+      }
+
+      const updated = await prisma.supplier.update({
+        where: { id: ctx.supplierId },
+        data: { businessName: newName },
+        include: { category: true, bankAccounts: true },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await this.sendSupplierUpdatedConfirmation(rawFrom, updated, 'Razón Social actualizada');
+      return;
+    }
+
+    // Paso 3B: Guardar nuevo rubro
+    if (session.state === 'SUPPLIER_EDIT_VAL_CATEGORY') {
+      const categoriesList: { id: string; name: string }[] = ctx.categoriesList || [];
+      let category: any = null;
+
+      const num = parseInt(input, 10);
+      if (!isNaN(num)) {
+        if (num >= 1 && num <= categoriesList.length) {
+          const selected = categoriesList[num - 1];
+          category = await prisma.category.findUnique({ where: { id: selected.id } });
+        } else {
+          await whatsappService.sendText(
+            rawFrom,
+            `⚠️ Opción no válida. Responde con un número del 1 al ${categoriesList.length} o escribe el nombre del rubro:`
+          );
+          return;
+        }
+      } else {
+        category = await prisma.category.findFirst({
+          where: {
+            name: { equals: input, mode: 'insensitive' },
+            OR: [{ tenantId: null }, { tenantId: tenantUser.tenantId }],
+          },
+        });
+
+        if (!category) {
+          category = await prisma.category.create({
+            data: {
+              tenantId: tenantUser.tenantId,
+              name: input,
+            },
+          });
+        }
+      }
+
+      if (!category) {
+        await whatsappService.sendText(rawFrom, '⚠️ No se pudo asignar la categoría. Intenta nuevamente:');
+        return;
+      }
+
+      const updated = await prisma.supplier.update({
+        where: { id: ctx.supplierId },
+        data: { categoryId: category.id },
+        include: { category: true, bankAccounts: true },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await this.sendSupplierUpdatedConfirmation(rawFrom, updated, `Rubro actualizado a "${category.name}"`);
+      return;
+    }
+
+    // Paso 3C: Guardar nuevo teléfono
+    if (session.state === 'SUPPLIER_EDIT_VAL_PHONE') {
+      const cleanDigits = input.replace(/\D/g, '');
+      if (cleanDigits.length < 8) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ Por favor ingresa un número de teléfono válido (mínimo 8 dígitos):'
+        );
+        return;
+      }
+
+      const updated = await prisma.supplier.update({
+        where: { id: ctx.supplierId },
+        data: { phone: input },
+        include: { category: true, bankAccounts: true },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await this.sendSupplierUpdatedConfirmation(rawFrom, updated, `Teléfono actualizado a ${input}`);
+      return;
+    }
+
+    // Paso 3D: Guardar nuevos datos bancarios
+    if (session.state === 'SUPPLIER_EDIT_VAL_BANK') {
+      if (lower === 'eliminar' || lower === 'borrar' || lower === 'quitar') {
+        await prisma.supplierBankAccount.deleteMany({
+          where: { supplierId: ctx.supplierId },
+        });
+
+        const updated = await prisma.supplier.findUnique({
+          where: { id: ctx.supplierId },
+          include: { category: true, bankAccounts: true },
+        });
+
+        await prisma.conversationSession.delete({ where: { id: session.id } });
+        await this.sendSupplierUpdatedConfirmation(rawFrom, updated, 'Datos bancarios eliminados');
+        return;
+      }
+
+      const cbuMatch = input.match(/\b\d{22}\b/);
+      const aliasMatch =
+        input.match(/alias[:\s]+([a-zA-Z0-9.\-_]+)/i) ||
+        (!cbuMatch && input.match(/^[a-zA-Z0-9.\-_]{4,}$/) ? [null, input] : null);
+
+      const cbu = cbuMatch ? cbuMatch[0] : null;
+      const alias = aliasMatch ? aliasMatch[1] : null;
+
+      if (!cbu && !alias) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ No se reconoció un CBU (22 dígitos) ni Alias válido. Ingresa el Alias (ej: "PROVEEDOR.PAGOS") o CBU (o escribe *Eliminar* / *Cancelar*):'
+        );
+        return;
+      }
+
+      const existingBank = await prisma.supplierBankAccount.findFirst({
+        where: { supplierId: ctx.supplierId },
+      });
+
+      if (existingBank) {
+        await prisma.supplierBankAccount.update({
+          where: { id: existingBank.id },
+          data: {
+            ...(cbu ? { cbuCvu: cbu } : {}),
+            ...(alias ? { alias: alias } : {}),
+          },
+        });
+      } else {
+        await prisma.supplierBankAccount.create({
+          data: {
+            supplierId: ctx.supplierId,
+            cbuCvu: cbu,
+            alias: alias,
+            isPrimary: true,
+          },
+        });
+      }
+
+      const updated = await prisma.supplier.findUnique({
+        where: { id: ctx.supplierId },
+        include: { category: true, bankAccounts: true },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await this.sendSupplierUpdatedConfirmation(rawFrom, updated, 'Datos bancarios actualizados');
       return;
     }
   }
@@ -814,6 +1303,1173 @@ _Quedó incorporada a tu grilla de pagos._`;
   }
 
   /**
+   * Flujo de Modificación / Edición de Factura (WhatsApp)
+   */
+  private async startInvoiceEditFlow(
+    tenantUser: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const cleanPhone = tenantUser.phoneNumber;
+
+    // Buscar facturas pendientes o activas en grilla
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        tenantId: tenantUser.tenantId,
+        status: { in: ['EN_GRILLA', 'PENDIENTE', 'APROBADA'] },
+      },
+      include: {
+        supplier: {
+          include: { category: true, bankAccounts: true },
+        },
+      },
+      orderBy: { dueDate: 'asc' },
+    });
+
+    if (invoices.length === 0) {
+      await whatsappService.sendText(
+        rawFrom,
+        '⚠️ *No tienes facturas pendientes en tu grilla para modificar.* Para cargar una nueva, envía una foto o escribe *"Cargar factura"*.'
+      );
+      return;
+    }
+
+    // Verificar si el usuario ya especificó un número o nombre en el comando (ej: "editar factura 0001-00004523")
+    const searchParam = text
+      .replace(/^(editar|modificar|actualizar|corregir|cambiar)(\s+una)?\s+(factura|boleta|comprobante)\s*/i, '')
+      .trim()
+      .toLowerCase();
+
+    let selectedInvoice = null;
+    if (searchParam.length >= 2) {
+      selectedInvoice = invoices.find(
+        (inv) =>
+          inv.invoiceNumber.toLowerCase().includes(searchParam) ||
+          inv.supplier.businessName.toLowerCase().includes(searchParam)
+      );
+    }
+
+    // Si solo hay una factura activa, seleccionarla directamente
+    if (!selectedInvoice && invoices.length === 1) {
+      selectedInvoice = invoices[0];
+    }
+
+    if (selectedInvoice) {
+      await prisma.conversationSession.upsert({
+        where: { phoneNumber: cleanPhone },
+        update: {
+          state: 'INVOICE_EDIT_FIELD_SELECT',
+          contextData: {
+            tenantId: tenantUser.tenantId,
+            invoiceId: selectedInvoice.id,
+            supplierName: selectedInvoice.supplier.businessName,
+          },
+        },
+        create: {
+          phoneNumber: cleanPhone,
+          state: 'INVOICE_EDIT_FIELD_SELECT',
+          contextData: {
+            tenantId: tenantUser.tenantId,
+            invoiceId: selectedInvoice.id,
+            supplierName: selectedInvoice.supplier.businessName,
+          },
+        },
+      });
+
+      await this.sendInvoiceEditFieldPrompt(rawFrom, selectedInvoice);
+      return;
+    }
+
+    // Si hay varias facturas, mostrar la lista numerada
+    let prompt = `📋 *Modificación de Facturas*\n\nSelecciona el *número* de la factura que deseas modificar:\n\n`;
+    invoices.forEach((inv, idx) => {
+      const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(inv.amount));
+      const dueStr = inv.dueDate.toLocaleDateString('es-AR');
+      prompt += `${idx + 1}️⃣ *${inv.supplier.businessName}* — ${inv.invoiceType || 'Factura'} Nº ${inv.invoiceNumber}\n   💵 ${amtStr} — 📅 Vto: ${dueStr}\n\n`;
+    });
+    prompt += `_Responde con el número de la lista (ej: 1) o escribe *Cancelar* para salir:_`;
+
+    await prisma.conversationSession.upsert({
+      where: { phoneNumber: cleanPhone },
+      update: {
+        state: 'INVOICE_EDIT_SELECT',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          invoicesList: invoices.map((inv) => ({
+            id: inv.id,
+            number: inv.invoiceNumber,
+            supplier: inv.supplier.businessName,
+          })),
+        },
+      },
+      create: {
+        phoneNumber: cleanPhone,
+        state: 'INVOICE_EDIT_SELECT',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          invoicesList: invoices.map((inv) => ({
+            id: inv.id,
+            number: inv.invoiceNumber,
+            supplier: inv.supplier.businessName,
+          })),
+        },
+      },
+    });
+
+    await whatsappService.sendText(rawFrom, prompt);
+  }
+
+  private async sendInvoiceEditFieldPrompt(rawFrom: string, invoice: any): Promise<void> {
+    const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(invoice.amount));
+    const dueStr = invoice.dueDate.toLocaleDateString('es-AR');
+    const schedStr = paymentGridService.formatFriendlyDate(invoice.scheduledPaymentDate);
+
+    const msg = `🧾 *Editar Factura: ${invoice.supplier.businessName}*
+📄 *Comprobante actual:* ${invoice.invoiceType || 'Factura'} Nº ${invoice.invoiceNumber}
+
+1️⃣ *Monto:* ${amtStr}
+2️⃣ *Fecha de Vencimiento:* ${dueStr} (Agendada en grilla: ${schedStr})
+3️⃣ *Número de Comprobante:* ${invoice.invoiceNumber}
+4️⃣ *Tipo de Comprobante:* ${invoice.invoiceType || 'Factura'}
+
+_Responde con el número del dato que deseas modificar (1 al 4) o escribe *Cancelar* para salir:_`;
+
+    await whatsappService.sendText(rawFrom, msg);
+  }
+
+  private async sendInvoiceUpdatedConfirmation(
+    rawFrom: string,
+    invoice: any,
+    detail: string
+  ): Promise<void> {
+    const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(invoice.amount));
+    const dueStr = invoice.dueDate.toLocaleDateString('es-AR');
+    const schedStr = paymentGridService.formatFriendlyDate(invoice.scheduledPaymentDate);
+
+    const msg = `✅ *¡Factura actualizada con éxito!*
+_${detail}_
+
+🏢 *Proveedor:* ${invoice.supplier.businessName}
+📄 *Comprobante:* ${invoice.invoiceType || 'Factura'} Nº ${invoice.invoiceNumber}
+💰 *Monto:* ${amtStr}
+⏰ *Nuevo Vencimiento:* ${dueStr}
+📅 *Fecha en Grilla Semanal:* *${schedStr}*
+
+💡 _Los cambios ya se encuentran reflejados en tu Grilla de Pagos y Dashboard._`;
+
+    await whatsappService.sendText(rawFrom, msg);
+  }
+
+  private async handleInvoiceEditStep(
+    tenantUser: any,
+    session: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const ctx = (session.contextData as any) || {};
+    const input = text.trim();
+    const lower = input.toLowerCase();
+
+    // Salida global / Cancelación
+    if (lower === 'cancelar' || lower === 'salir' || lower === 'volver') {
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await whatsappService.sendText(rawFrom, '❌ Operación cancelada. La factura no fue modificada.');
+      return;
+    }
+
+    // Paso 1: Selección de factura de la lista
+    if (session.state === 'INVOICE_EDIT_SELECT') {
+      const invoicesList: { id: string; number: string; supplier: string }[] = ctx.invoicesList || [];
+      let selectedInvoice: any = null;
+
+      const num = parseInt(input, 10);
+      if (!isNaN(num) && num >= 1 && num <= invoicesList.length) {
+        selectedInvoice = await prisma.invoice.findUnique({
+          where: { id: invoicesList[num - 1].id },
+          include: { supplier: { include: { category: true, bankAccounts: true } } },
+        });
+      } else {
+        selectedInvoice = await prisma.invoice.findFirst({
+          where: {
+            tenantId: tenantUser.tenantId,
+            status: { in: ['EN_GRILLA', 'PENDIENTE', 'APROBADA'] },
+            OR: [
+              { invoiceNumber: { contains: input, mode: 'insensitive' } },
+              { supplier: { businessName: { contains: input, mode: 'insensitive' } } },
+            ],
+          },
+          include: { supplier: { include: { category: true, bankAccounts: true } } },
+        });
+      }
+
+      if (!selectedInvoice) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ Factura no identificada. Por favor responde con el número de la lista o escribe *Cancelar*:'
+        );
+        return;
+      }
+
+      ctx.invoiceId = selectedInvoice.id;
+      ctx.supplierName = selectedInvoice.supplier.businessName;
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'INVOICE_EDIT_FIELD_SELECT',
+          contextData: ctx,
+        },
+      });
+
+      await this.sendInvoiceEditFieldPrompt(rawFrom, selectedInvoice);
+      return;
+    }
+
+    // Paso 2: Selección del campo a modificar (1=Monto, 2=Vencimiento, 3=Número, 4=Tipo)
+    if (session.state === 'INVOICE_EDIT_FIELD_SELECT') {
+      if (
+        input === '1' ||
+        lower.includes('monto') ||
+        lower.includes('importe') ||
+        lower.includes('precio') ||
+        lower.includes('total')
+      ) {
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'INVOICE_EDIT_VAL_AMOUNT',
+            contextData: ctx,
+          },
+        });
+        await whatsappService.sendText(
+          rawFrom,
+          `💰 *Modificar Monto de la Factura*\n\nIngresa el nuevo monto a pagar para la factura de *${ctx.supplierName}* (ej: 45000 o 45000.50):\n\n_O escribe *Cancelar* para salir._`
+        );
+        return;
+      }
+
+      if (
+        input === '2' ||
+        lower.includes('vencimiento') ||
+        lower.includes('fecha') ||
+        lower.includes('vto')
+      ) {
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'INVOICE_EDIT_VAL_DUEDATE',
+            contextData: ctx,
+          },
+        });
+        await whatsappService.sendText(
+          rawFrom,
+          `📅 *Modificar Fecha de Vencimiento*\n\nIngresa la nueva fecha de vencimiento (ej: "28/09/2026", "el próximo viernes" o "mañana"):\n\n_O escribe *Cancelar* para salir._`
+        );
+        return;
+      }
+
+      if (
+        input === '3' ||
+        lower.includes('numero') ||
+        lower.includes('número') ||
+        lower.includes('comprobante')
+      ) {
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'INVOICE_EDIT_VAL_NUMBER',
+            contextData: ctx,
+          },
+        });
+        await whatsappService.sendText(
+          rawFrom,
+          `🔢 *Modificar Número de Comprobante*\n\nIngresa el nuevo número de comprobante (ej: "0001-00045239"):\n\n_O escribe *Cancelar* para salir._`
+        );
+        return;
+      }
+
+      if (input === '4' || lower.includes('tipo')) {
+        const typePrompt = `📄 *Modificar Tipo de Comprobante para ${ctx.supplierName}*\n\nSelecciona el *número* correspondiente al tipo de comprobante:\n\n1️⃣ Factura A\n2️⃣ Factura B\n3️⃣ Factura C\n4️⃣ Recibo\n5️⃣ Ticket / Factura M / Otro\n\n_Responde con el número de la opción (1 al 5) o escribe el tipo directamente (o *Cancelar*):_`;
+
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'INVOICE_EDIT_VAL_TYPE',
+            contextData: ctx,
+          },
+        });
+
+        await whatsappService.sendText(rawFrom, typePrompt);
+        return;
+      }
+
+      await whatsappService.sendText(
+        rawFrom,
+        '⚠️ Opción no válida. Responde con un número del 1 al 4 para elegir el dato a modificar (o escribe *Cancelar*):'
+      );
+      return;
+    }
+
+    // Paso 3A: Guardar nuevo monto
+    if (session.state === 'INVOICE_EDIT_VAL_AMOUNT') {
+      const cleanAmountStr = input.replace(/[$ ]/g, '');
+      let parsedAmount = NaN;
+      if (cleanAmountStr.includes(',') && cleanAmountStr.includes('.')) {
+        parsedAmount = parseFloat(cleanAmountStr.replace(/\./g, '').replace(',', '.'));
+      } else if (cleanAmountStr.includes(',')) {
+        parsedAmount = parseFloat(cleanAmountStr.replace(',', '.'));
+      } else {
+        parsedAmount = parseFloat(cleanAmountStr);
+      }
+
+      if (isNaN(parsedAmount) || parsedAmount <= 0) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ Monto no válido. Por favor ingresa un número positivo (ej: 45000 o 45000.50):'
+        );
+        return;
+      }
+
+      const updated = await prisma.invoice.update({
+        where: { id: ctx.invoiceId },
+        data: { amount: parsedAmount },
+        include: { supplier: { include: { category: true, bankAccounts: true } } },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await this.sendInvoiceUpdatedConfirmation(rawFrom, updated, 'Monto actualizado');
+      return;
+    }
+
+    // Paso 3B: Guardar nueva fecha de vencimiento y recalcular grilla
+    if (session.state === 'INVOICE_EDIT_VAL_DUEDATE') {
+      const newDueDate = this.parseNaturalDate(input);
+      if (!newDueDate) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ Fecha no reconocida. Por favor ingresa un formato válido como "25/09/2026", "mañana" o "el próximo viernes":'
+        );
+        return;
+      }
+
+      const configuredDays = tenantUser.tenant.paymentGridConfig?.paymentDays || 'MARTES,JUEVES';
+      const newScheduledDate = paymentGridService.calculateScheduledDate(newDueDate, configuredDays);
+
+      const updated = await prisma.invoice.update({
+        where: { id: ctx.invoiceId },
+        data: {
+          dueDate: newDueDate,
+          scheduledPaymentDate: newScheduledDate,
+        },
+        include: { supplier: { include: { category: true, bankAccounts: true } } },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await this.sendInvoiceUpdatedConfirmation(rawFrom, updated, 'Fecha de vencimiento y pago reprogramada');
+      return;
+    }
+
+    // Paso 3C: Guardar nuevo número de comprobante
+    if (session.state === 'INVOICE_EDIT_VAL_NUMBER') {
+      if (!input || input.length < 1) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ El número de comprobante no puede estar vacío. Ingrésalo nuevamente:'
+        );
+        return;
+      }
+
+      const updated = await prisma.invoice.update({
+        where: { id: ctx.invoiceId },
+        data: { invoiceNumber: input },
+        include: { supplier: { include: { category: true, bankAccounts: true } } },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await this.sendInvoiceUpdatedConfirmation(rawFrom, updated, `Número de comprobante actualizado a "${input}"`);
+      return;
+    }
+
+    // Paso 3D: Guardar nuevo tipo de comprobante
+    if (session.state === 'INVOICE_EDIT_VAL_TYPE') {
+      let selectedType = input;
+      if (input === '1') selectedType = 'Factura A';
+      else if (input === '2') selectedType = 'Factura B';
+      else if (input === '3') selectedType = 'Factura C';
+      else if (input === '4') selectedType = 'Recibo';
+      else if (input === '5') selectedType = 'Ticket';
+
+      const updated = await prisma.invoice.update({
+        where: { id: ctx.invoiceId },
+        data: { invoiceType: selectedType },
+        include: { supplier: { include: { category: true, bankAccounts: true } } },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await this.sendInvoiceUpdatedConfirmation(rawFrom, updated, `Tipo de comprobante actualizado a "${selectedType}"`);
+      return;
+    }
+  }
+
+  /**
+   * Flujo de Anulación de Factura (WhatsApp)
+   */
+  private async startInvoiceCancelFlow(
+    tenantUser: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const cleanPhone = tenantUser.phoneNumber;
+
+    // Buscar facturas activas o pendientes para anular
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        tenantId: tenantUser.tenantId,
+        status: { in: ['EN_GRILLA', 'PENDIENTE', 'APROBADA', 'POSTERGADA'] },
+      },
+      include: {
+        supplier: {
+          include: { category: true, bankAccounts: true },
+        },
+      },
+      orderBy: { dueDate: 'asc' },
+    });
+
+    if (invoices.length === 0) {
+      await whatsappService.sendText(
+        rawFrom,
+        '⚠️ *No tienes facturas activas o pendientes para anular.*'
+      );
+      return;
+    }
+
+    // Verificar si el usuario ya especificó un número o nombre en el comando
+    const searchParam = text
+      .replace(/^(anular|cancelar|eliminar|borrar)(\s+una)?\s+(factura|boleta|comprobante)\s*/i, '')
+      .trim()
+      .toLowerCase();
+
+    let selectedInvoice = null;
+    if (searchParam.length >= 2) {
+      selectedInvoice = invoices.find(
+        (inv) =>
+          inv.invoiceNumber.toLowerCase().includes(searchParam) ||
+          inv.supplier.businessName.toLowerCase().includes(searchParam)
+      );
+    }
+
+    if (!selectedInvoice && invoices.length === 1) {
+      selectedInvoice = invoices[0];
+    }
+
+    if (selectedInvoice) {
+      await prisma.conversationSession.upsert({
+        where: { phoneNumber: cleanPhone },
+        update: {
+          state: 'INVOICE_CANCEL_CONFIRM',
+          contextData: {
+            tenantId: tenantUser.tenantId,
+            invoiceId: selectedInvoice.id,
+            invoiceNumber: selectedInvoice.invoiceNumber,
+            supplierName: selectedInvoice.supplier.businessName,
+          },
+        },
+        create: {
+          phoneNumber: cleanPhone,
+          state: 'INVOICE_CANCEL_CONFIRM',
+          contextData: {
+            tenantId: tenantUser.tenantId,
+            invoiceId: selectedInvoice.id,
+            invoiceNumber: selectedInvoice.invoiceNumber,
+            supplierName: selectedInvoice.supplier.businessName,
+          },
+        },
+      });
+
+      const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(selectedInvoice.amount));
+      const dueStr = selectedInvoice.dueDate.toLocaleDateString('es-AR');
+
+      const confirmPrompt = `⚠️ *¿Confirmas la anulación de esta factura?*
+
+🏢 *Proveedor:* ${selectedInvoice.supplier.businessName}
+📄 *Comprobante:* ${selectedInvoice.invoiceType || 'Factura'} Nº ${selectedInvoice.invoiceNumber}
+💵 *Monto:* ${amtStr}
+📅 *Vencimiento:* ${dueStr}
+
+_Al anularla, la factura saldrá de tu grilla de pagos y de tus recordatorios diarios._
+
+1️⃣ *Sí, anular factura*
+2️⃣ *No, cancelar operación*
+
+_Responde con el número de la opción (1 o 2):_`;
+
+      await whatsappService.sendText(rawFrom, confirmPrompt);
+      return;
+    }
+
+    // Si hay varias facturas, listarlas numeradas
+    let prompt = `🗑️ *Anulación de Factura*\n\nSelecciona el *número* de la factura que deseas anular:\n\n`;
+    invoices.forEach((inv, idx) => {
+      const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(inv.amount));
+      const dueStr = inv.dueDate.toLocaleDateString('es-AR');
+      prompt += `${idx + 1}️⃣ *${inv.supplier.businessName}* — ${inv.invoiceType || 'Factura'} Nº ${inv.invoiceNumber}\n   💵 ${amtStr} — 📅 Vto: ${dueStr}\n\n`;
+    });
+    prompt += `_Responde con el número de la lista (ej: 1) o escribe *Cancelar* para salir:_`;
+
+    await prisma.conversationSession.upsert({
+      where: { phoneNumber: cleanPhone },
+      update: {
+        state: 'INVOICE_CANCEL_SELECT',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          invoicesList: invoices.map((inv) => ({
+            id: inv.id,
+            number: inv.invoiceNumber,
+            supplier: inv.supplier.businessName,
+          })),
+        },
+      },
+      create: {
+        phoneNumber: cleanPhone,
+        state: 'INVOICE_CANCEL_SELECT',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          invoicesList: invoices.map((inv) => ({
+            id: inv.id,
+            number: inv.invoiceNumber,
+            supplier: inv.supplier.businessName,
+          })),
+        },
+      },
+    });
+
+    await whatsappService.sendText(rawFrom, prompt);
+  }
+
+  private async handleInvoiceCancelStep(
+    tenantUser: any,
+    session: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const ctx = (session.contextData as any) || {};
+    const input = text.trim();
+    const lower = input.toLowerCase();
+
+    if (lower === 'cancelar' || lower === 'salir' || lower === 'volver') {
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await whatsappService.sendText(rawFrom, '❌ Operación cancelada. La factura continúa activa.');
+      return;
+    }
+
+    // Paso 1: Selección de factura de la lista
+    if (session.state === 'INVOICE_CANCEL_SELECT') {
+      const invoicesList: { id: string; number: string; supplier: string }[] = ctx.invoicesList || [];
+      let selectedInvoice: any = null;
+
+      const num = parseInt(input, 10);
+      if (!isNaN(num) && num >= 1 && num <= invoicesList.length) {
+        selectedInvoice = await prisma.invoice.findUnique({
+          where: { id: invoicesList[num - 1].id },
+          include: { supplier: true },
+        });
+      } else {
+        selectedInvoice = await prisma.invoice.findFirst({
+          where: {
+            tenantId: tenantUser.tenantId,
+            status: { in: ['EN_GRILLA', 'PENDIENTE', 'APROBADA', 'POSTERGADA'] },
+            OR: [
+              { invoiceNumber: { contains: input, mode: 'insensitive' } },
+              { supplier: { businessName: { contains: input, mode: 'insensitive' } } },
+            ],
+          },
+          include: { supplier: true },
+        });
+      }
+
+      if (!selectedInvoice) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ Factura no identificada. Por favor responde con el número de la lista o escribe *Cancelar*:'
+        );
+        return;
+      }
+
+      ctx.invoiceId = selectedInvoice.id;
+      ctx.invoiceNumber = selectedInvoice.invoiceNumber;
+      ctx.supplierName = selectedInvoice.supplier.businessName;
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'INVOICE_CANCEL_CONFIRM',
+          contextData: ctx,
+        },
+      });
+
+      const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(selectedInvoice.amount));
+      const dueStr = selectedInvoice.dueDate.toLocaleDateString('es-AR');
+
+      const confirmPrompt = `⚠️ *¿Confirmas la anulación de esta factura?*
+
+🏢 *Proveedor:* ${selectedInvoice.supplier.businessName}
+📄 *Comprobante:* ${selectedInvoice.invoiceType || 'Factura'} Nº ${selectedInvoice.invoiceNumber}
+💵 *Monto:* ${amtStr}
+📅 *Vencimiento:* ${dueStr}
+
+_Al anularla, la factura saldrá de tu grilla de pagos y de tus recordatorios diarios._
+
+1️⃣ *Sí, anular factura*
+2️⃣ *No, cancelar operación*
+
+_Responde con el número de la opción (1 o 2):_`;
+
+      await whatsappService.sendText(rawFrom, confirmPrompt);
+      return;
+    }
+
+    // Paso 2: Confirmación expresa
+    if (session.state === 'INVOICE_CANCEL_CONFIRM') {
+      if (input === '1' || lower === 'si' || lower === 'sí' || lower.includes('anular')) {
+        const updated = await prisma.invoice.update({
+          where: { id: ctx.invoiceId },
+          data: { status: 'CANCELADA' },
+          include: { supplier: true },
+        });
+
+        await prisma.conversationSession.delete({ where: { id: session.id } });
+
+        const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(updated.amount));
+
+        const successMsg = `🚫 *¡Factura Anulada con Éxito!*
+
+🏢 *Proveedor:* ${updated.supplier.businessName}
+📄 *Comprobante:* ${updated.invoiceType || 'Factura'} Nº ${updated.invoiceNumber}
+💵 *Monto:* ${amtStr}
+
+💡 _El comprobante ha sido cancelado y ya no figura en tu Grilla Semanal de Pagos ni en los recordatorios._`;
+
+        await whatsappService.sendText(rawFrom, successMsg);
+        return;
+      }
+
+      if (input === '2' || lower === 'no' || lower.includes('cancelar')) {
+        await prisma.conversationSession.delete({ where: { id: session.id } });
+        await whatsappService.sendText(rawFrom, '👍 Operación cancelada. La factura continúa activa en tu grilla.');
+        return;
+      }
+
+      await whatsappService.sendText(
+        rawFrom,
+        '⚠️ Opción no válida. Responde *1* para confirmar la anulación o *2* para mantener la factura:'
+      );
+      return;
+    }
+  }
+
+  /**
+   * Flujo de Reversión de Pago (WhatsApp)
+   */
+  private async startPaymentRevertFlow(
+    tenantUser: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const cleanPhone = tenantUser.phoneNumber;
+
+    // Buscar facturas con estado PAGADA
+    const paidInvoices = await prisma.invoice.findMany({
+      where: {
+        tenantId: tenantUser.tenantId,
+        status: 'PAGADA',
+      },
+      include: {
+        supplier: {
+          include: { category: true, bankAccounts: true },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 15,
+    });
+
+    if (paidInvoices.length === 0) {
+      await whatsappService.sendText(
+        rawFrom,
+        'ℹ️ *No tienes facturas marcadas como pagadas para revertir.*'
+      );
+      return;
+    }
+
+    // Verificar si el usuario especificó número o proveedor
+    const searchParam = text
+      .replace(/^(revertir|deshacer|cancelar)(\s+el)?\s+(pago|factura pagada)\s*/i, '')
+      .trim()
+      .toLowerCase();
+
+    let selectedInvoice = null;
+    if (searchParam.length >= 2) {
+      selectedInvoice = paidInvoices.find(
+        (inv) =>
+          inv.invoiceNumber.toLowerCase().includes(searchParam) ||
+          inv.supplier.businessName.toLowerCase().includes(searchParam)
+      );
+    }
+
+    if (!selectedInvoice && paidInvoices.length === 1) {
+      selectedInvoice = paidInvoices[0];
+    }
+
+    if (selectedInvoice) {
+      await prisma.conversationSession.upsert({
+        where: { phoneNumber: cleanPhone },
+        update: {
+          state: 'PAYMENT_REVERT_CONFIRM',
+          contextData: {
+            tenantId: tenantUser.tenantId,
+            invoiceId: selectedInvoice.id,
+            invoiceNumber: selectedInvoice.invoiceNumber,
+            supplierName: selectedInvoice.supplier.businessName,
+          },
+        },
+        create: {
+          phoneNumber: cleanPhone,
+          state: 'PAYMENT_REVERT_CONFIRM',
+          contextData: {
+            tenantId: tenantUser.tenantId,
+            invoiceId: selectedInvoice.id,
+            invoiceNumber: selectedInvoice.invoiceNumber,
+            supplierName: selectedInvoice.supplier.businessName,
+          },
+        },
+      });
+
+      const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(selectedInvoice.amount));
+
+      const confirmPrompt = `↩️ *¿Confirmas la reversión del pago de esta factura?*
+
+🏢 *Proveedor:* ${selectedInvoice.supplier.businessName}
+📄 *Comprobante:* ${selectedInvoice.invoiceType || 'Factura'} Nº ${selectedInvoice.invoiceNumber}
+💵 *Monto:* ${amtStr}
+
+_Al revertir el pago, la factura volverá al estado *Pendiente / En Grilla* para su programación de pago._
+
+1️⃣ *Sí, revertir pago y volver a la grilla*
+2️⃣ *No, cancelar operación*
+
+_Responde con el número de la opción (1 o 2):_`;
+
+      await whatsappService.sendText(rawFrom, confirmPrompt);
+      return;
+    }
+
+    // Si hay varias facturas pagadas, listarlas numeradas
+    let prompt = `↩️ *Reversión de Pago Registrado*\n\nSelecciona el *número* del pago que deseas revertir:\n\n`;
+    paidInvoices.forEach((inv, idx) => {
+      const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(inv.amount));
+      const dueStr = inv.dueDate.toLocaleDateString('es-AR');
+      prompt += `${idx + 1}️⃣ *${inv.supplier.businessName}* — ${inv.invoiceType || 'Factura'} Nº ${inv.invoiceNumber}\n   💵 ${amtStr} — 📅 Vto: ${dueStr}\n\n`;
+    });
+    prompt += `_Responde con el número de la lista (ej: 1) o escribe *Cancelar* para salir:_`;
+
+    await prisma.conversationSession.upsert({
+      where: { phoneNumber: cleanPhone },
+      update: {
+        state: 'PAYMENT_REVERT_SELECT',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          invoicesList: paidInvoices.map((inv) => ({
+            id: inv.id,
+            number: inv.invoiceNumber,
+            supplier: inv.supplier.businessName,
+          })),
+        },
+      },
+      create: {
+        phoneNumber: cleanPhone,
+        state: 'PAYMENT_REVERT_SELECT',
+        contextData: {
+          tenantId: tenantUser.tenantId,
+          invoicesList: paidInvoices.map((inv) => ({
+            id: inv.id,
+            number: inv.invoiceNumber,
+            supplier: inv.supplier.businessName,
+          })),
+        },
+      },
+    });
+
+    await whatsappService.sendText(rawFrom, prompt);
+  }
+
+  private async handlePaymentRevertStep(
+    tenantUser: any,
+    session: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const ctx = (session.contextData as any) || {};
+    const input = text.trim();
+    const lower = input.toLowerCase();
+
+    if (lower === 'cancelar' || lower === 'salir' || lower === 'volver') {
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await whatsappService.sendText(rawFrom, '❌ Operación cancelada. El pago continúa registrado.');
+      return;
+    }
+
+    // Paso 1: Selección de factura de la lista
+    if (session.state === 'PAYMENT_REVERT_SELECT') {
+      const invoicesList: { id: string; number: string; supplier: string }[] = ctx.invoicesList || [];
+      let selectedInvoice: any = null;
+
+      const num = parseInt(input, 10);
+      if (!isNaN(num) && num >= 1 && num <= invoicesList.length) {
+        selectedInvoice = await prisma.invoice.findUnique({
+          where: { id: invoicesList[num - 1].id },
+          include: { supplier: true },
+        });
+      } else {
+        selectedInvoice = await prisma.invoice.findFirst({
+          where: {
+            tenantId: tenantUser.tenantId,
+            status: 'PAGADA',
+            OR: [
+              { invoiceNumber: { contains: input, mode: 'insensitive' } },
+              { supplier: { businessName: { contains: input, mode: 'insensitive' } } },
+            ],
+          },
+          include: { supplier: true },
+        });
+      }
+
+      if (!selectedInvoice) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ Pago no identificado. Por favor responde con el número de la lista o escribe *Cancelar*:'
+        );
+        return;
+      }
+
+      ctx.invoiceId = selectedInvoice.id;
+      ctx.invoiceNumber = selectedInvoice.invoiceNumber;
+      ctx.supplierName = selectedInvoice.supplier.businessName;
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'PAYMENT_REVERT_CONFIRM',
+          contextData: ctx,
+        },
+      });
+
+      const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(selectedInvoice.amount));
+
+      const confirmPrompt = `↩️ *¿Confirmas la reversión del pago de esta factura?*
+
+🏢 *Proveedor:* ${selectedInvoice.supplier.businessName}
+📄 *Comprobante:* ${selectedInvoice.invoiceType || 'Factura'} Nº ${selectedInvoice.invoiceNumber}
+💵 *Monto:* ${amtStr}
+
+_Al revertir el pago, la factura volverá al estado *Pendiente / En Grilla* para su programación de pago._
+
+1️⃣ *Sí, revertir pago y volver a la grilla*
+2️⃣ *No, cancelar operación*
+
+_Responde con el número de la opción (1 o 2):_`;
+
+      await whatsappService.sendText(rawFrom, confirmPrompt);
+      return;
+    }
+
+    // Paso 2: Confirmación expresa
+    if (session.state === 'PAYMENT_REVERT_CONFIRM') {
+      if (input === '1' || lower === 'si' || lower === 'sí' || lower.includes('revertir')) {
+        const updated = await prisma.invoice.update({
+          where: { id: ctx.invoiceId },
+          data: { status: 'EN_GRILLA' },
+          include: { supplier: true },
+        });
+
+        await prisma.conversationSession.delete({ where: { id: session.id } });
+
+        const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(updated.amount));
+
+        const successMsg = `↩️ *¡Pago Revertido Exitosamente!*
+
+🏢 *Proveedor:* ${updated.supplier.businessName}
+📄 *Comprobante:* ${updated.invoiceType || 'Factura'} Nº ${updated.invoiceNumber}
+💵 *Monto:* ${amtStr}
+
+💡 _La factura volvió a estar activa en tu Grilla Semanal de Pagos y Dashboard._`;
+
+        await whatsappService.sendText(rawFrom, successMsg);
+        return;
+      }
+
+      if (input === '2' || lower === 'no' || lower.includes('cancelar')) {
+        await prisma.conversationSession.delete({ where: { id: session.id } });
+        await whatsappService.sendText(rawFrom, '👍 Operación cancelada. El comprobante permanece como Pagado.');
+        return;
+      }
+
+      await whatsappService.sendText(
+        rawFrom,
+        '⚠️ Opción no válida. Responde *1* para revertir el pago o *2* para mantenerlo como Pagado:'
+      );
+      return;
+    }
+  }
+
+  /**
+   * Formatea días de pago para visualización amigable
+   */
+  private formatDaysFriendly(daysStr: string): string {
+    const dayMap: Record<string, string> = {
+      LUNES: 'Lunes',
+      MARTES: 'Martes',
+      MIERCOLES: 'Miércoles',
+      MIÉRCOLES: 'Miércoles',
+      JUEVES: 'Jueves',
+      VIERNES: 'Viernes',
+      SABADO: 'Sábado',
+      SÁBADO: 'Sábado',
+      DOMINGO: 'Domingo',
+    };
+    const parts = daysStr.split(',').map((d) => dayMap[d.trim().toUpperCase()] || d.trim());
+    if (parts.length === 1) return parts[0];
+    if (parts.length === 2) return `${parts[0]} y ${parts[1]}`;
+    return parts.slice(0, -1).join(', ') + ' y ' + parts[parts.length - 1];
+  }
+
+  /**
+   * Flujo de Configuración y Modificación de Datos del Tenant (WhatsApp)
+   */
+  private async startTenantEditFlow(tenantUser: any, rawFrom: string): Promise<void> {
+    const cleanPhone = tenantUser.phoneNumber;
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantUser.tenantId },
+      include: {
+        plan: true,
+        paymentGridConfig: true,
+      },
+    });
+
+    if (!tenant) return;
+
+    const currentDays = tenant.paymentGridConfig?.paymentDays || 'MARTES,JUEVES';
+    const friendlyDays = this.formatDaysFriendly(currentDays);
+    const planName = tenant.plan?.name || 'Plan Activo';
+
+    const menu = `⚙️ *Configuración de Empresa: ${tenant.businessName}*
+🆔 *CUIT:* ${tenant.cuit}
+📦 *Plan Activo:* ${planName}
+
+1️⃣ *Razón Social:* ${tenant.businessName}
+2️⃣ *Días de Pago en Grilla:* ${friendlyDays}
+3️⃣ *Cancelar*
+
+_Responde con el número del dato que deseas modificar (1 o 2) o escribe *Cancelar*:_`;
+
+    await prisma.conversationSession.upsert({
+      where: { phoneNumber: cleanPhone },
+      update: {
+        state: 'TENANT_EDIT_MENU',
+        contextData: {
+          tenantId: tenant.id,
+          businessName: tenant.businessName,
+          currentDays: currentDays,
+        },
+      },
+      create: {
+        phoneNumber: cleanPhone,
+        state: 'TENANT_EDIT_MENU',
+        contextData: {
+          tenantId: tenant.id,
+          businessName: tenant.businessName,
+          currentDays: currentDays,
+        },
+      },
+    });
+
+    await whatsappService.sendText(rawFrom, menu);
+  }
+
+  private async handleTenantEditStep(
+    tenantUser: any,
+    session: any,
+    rawFrom: string,
+    text: string
+  ): Promise<void> {
+    const ctx = (session.contextData as any) || {};
+    const input = text.trim();
+    const lower = input.toLowerCase();
+
+    if (lower === 'cancelar' || lower === 'salir' || lower === 'volver') {
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await whatsappService.sendText(rawFrom, '❌ Operación cancelada. Los datos de la empresa no fueron modificados.');
+      return;
+    }
+
+    if (session.state === 'TENANT_EDIT_MENU' && input === '3') {
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await whatsappService.sendText(rawFrom, '❌ Operación cancelada. Los datos de la empresa no fueron modificados.');
+      return;
+    }
+
+    // Paso 1: Selección de opción del menú
+    if (session.state === 'TENANT_EDIT_MENU') {
+      if (input === '1' || lower.includes('razon') || lower.includes('razón') || lower.includes('nombre')) {
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'TENANT_EDIT_VAL_NAME',
+            contextData: ctx,
+          },
+        });
+
+        await whatsappService.sendText(
+          rawFrom,
+          `✏️ *Modificar Razón Social*\n\nEscribe el nuevo nombre o razón social de tu empresa:\n(Actual: *${ctx.businessName}*)\n\n_O escribe *Cancelar* para salir._`
+        );
+        return;
+      }
+
+      if (input === '2' || lower.includes('dias') || lower.includes('días') || lower.includes('grilla') || lower.includes('pago')) {
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'TENANT_EDIT_VAL_DAYS',
+            contextData: ctx,
+          },
+        });
+
+        const friendlyDays = this.formatDaysFriendly(ctx.currentDays || 'MARTES,JUEVES');
+
+        const prompt = `📅 *Modificar Días de Pago en Grilla Semanal*
+(Actual: *${friendlyDays}*)
+
+Selecciona el *número* de una de las combinaciones habituales o escribe tus días:
+
+1️⃣ Martes y Jueves (Recomendado)
+2️⃣ Lunes y Jueves
+3️⃣ Miércoles y Viernes
+4️⃣ Solo Viernes
+5️⃣ Todos los días hábiles (Lunes a Viernes)
+
+_Responde con el número de la opción (1 al 5) o escribe días específicos separados por coma (ej: "Lunes, Miércoles"):_`;
+
+        await whatsappService.sendText(rawFrom, prompt);
+        return;
+      }
+
+      await whatsappService.sendText(
+        rawFrom,
+        '⚠️ Opción no válida. Responde *1* para Razón Social o *2* para Días de Pago (o escribe *Cancelar*):'
+      );
+      return;
+    }
+
+    // Paso 2A: Guardar nueva razón social
+    if (session.state === 'TENANT_EDIT_VAL_NAME') {
+      if (!input || input.length < 2) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ La razón social debe tener al menos 2 caracteres. Ingrésala nuevamente:'
+        );
+        return;
+      }
+
+      const updated = await prisma.tenant.update({
+        where: { id: tenantUser.tenantId },
+        data: { businessName: input },
+      });
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+
+      const msg = `✅ *¡Razón Social actualizada con éxito!*
+
+🏢 *Nueva Razón Social:* ${updated.businessName}
+🆔 *CUIT:* ${updated.cuit}
+
+💡 _El nuevo nombre se verá reflejado en tus reportes, dashboard y comprobantes enviados a proveedores._`;
+
+      await whatsappService.sendText(rawFrom, msg);
+      return;
+    }
+
+    // Paso 2B: Guardar nuevos días de pago y reprogramar facturas en grilla
+    if (session.state === 'TENANT_EDIT_VAL_DAYS') {
+      let newDaysStr = '';
+
+      if (input === '1') newDaysStr = 'MARTES,JUEVES';
+      else if (input === '2') newDaysStr = 'LUNES,JUEVES';
+      else if (input === '3') newDaysStr = 'MIERCOLES,VIERNES';
+      else if (input === '4') newDaysStr = 'VIERNES';
+      else if (input === '5') newDaysStr = 'LUNES,MARTES,MIERCOLES,JUEVES,VIERNES';
+      else {
+        // Parsear días del texto libre
+        const validDays = ['DOMINGO', 'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO'];
+        const words = input
+          .toUpperCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .split(/[\s,y]+/);
+
+        const matched = validDays.filter((vd) => words.includes(vd));
+        if (matched.length > 0) {
+          newDaysStr = matched.join(',');
+        }
+      }
+
+      if (!newDaysStr) {
+        await whatsappService.sendText(
+          rawFrom,
+          '⚠️ No se reconocieron días válidos. Responde con un número del 1 al 5 o escribe los días (ej: "Lunes, Jueves"):'
+        );
+        return;
+      }
+
+      // 1. Actualizar configuración en DB
+      await prisma.paymentGridConfig.upsert({
+        where: { tenantId: tenantUser.tenantId },
+        update: { paymentDays: newDaysStr },
+        create: { tenantId: tenantUser.tenantId, paymentDays: newDaysStr },
+      });
+
+      // 2. Reprogramar automáticamente las facturas activas en grilla
+      const pendingInvoices = await prisma.invoice.findMany({
+        where: {
+          tenantId: tenantUser.tenantId,
+          status: 'EN_GRILLA',
+        },
+      });
+
+      for (const inv of pendingInvoices) {
+        const newSched = paymentGridService.calculateScheduledDate(inv.dueDate, newDaysStr);
+        await prisma.invoice.update({
+          where: { id: inv.id },
+          data: { scheduledPaymentDate: newSched },
+        });
+      }
+
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+
+      const friendlyNewDays = this.formatDaysFriendly(newDaysStr);
+
+      const msg = `✅ *¡Días de Pago en Grilla Actualizados!*
+
+📅 *Nuevos Días de Corte:* *${friendlyNewDays}*
+🔄 Se reprogramaron *${pendingInvoices.length} facturas pendientes* a las nuevas fechas de tu grilla semanal.
+
+💡 _Los nuevos comprobantes que cargues se agendarán automáticamente respetando este esquema._`;
+
+      await whatsappService.sendText(rawFrom, msg);
+      return;
+    }
+  }
+
+  /**
    * Procesa la recepción de una foto o PDF de factura con IA
    */
   private async handleMediaInvoice(tenantUser: any, rawFrom: string, media: any): Promise<void> {
@@ -1037,6 +2693,20 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       return;
     }
 
+    // 2.2 Detección de intención para modificar/editar proveedor
+    const isEditSupplier =
+      lower.includes('editar proveedor') ||
+      lower.includes('modificar proveedor') ||
+      lower.includes('actualizar proveedor') ||
+      lower.includes('cambiar proveedor') ||
+      lower.includes('editar un proveedor') ||
+      lower.includes('modificar un proveedor');
+
+    if (isEditSupplier) {
+      await this.startSupplierEditFlow(tenantUser, rawFrom, text);
+      return;
+    }
+
     // 3. Carga manual de facturas / invoices
     const isManualInvoice =
       lower === '3' ||
@@ -1050,6 +2720,73 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
 
     if (isManualInvoice) {
       await this.startManualInvoiceRegistration(tenantUser, rawFrom);
+      return;
+    }
+
+    // 3.1 Detección de intención para modificar/editar factura
+    const isEditInvoice =
+      lower.includes('editar factura') ||
+      lower.includes('modificar factura') ||
+      lower.includes('actualizar factura') ||
+      lower.includes('corregir factura') ||
+      lower.includes('cambiar factura') ||
+      lower.includes('editar comprobante') ||
+      lower.includes('modificar comprobante') ||
+      lower.includes('editar boleta') ||
+      lower.includes('modificar boleta');
+
+    if (isEditInvoice) {
+      await this.startInvoiceEditFlow(tenantUser, rawFrom, text);
+      return;
+    }
+
+    // 3.2 Detección de intención para anular factura
+    const isCancelInvoice =
+      lower.includes('anular factura') ||
+      lower.includes('cancelar factura') ||
+      lower.includes('eliminar factura') ||
+      lower.includes('borrar factura') ||
+      lower.includes('dar de baja factura') ||
+      lower.includes('anular comprobante') ||
+      lower.includes('cancelar comprobante');
+
+    if (isCancelInvoice) {
+      await this.startInvoiceCancelFlow(tenantUser, rawFrom, text);
+      return;
+    }
+
+    // 3.3 Detección de intención para revertir pago
+    const isRevertPayment =
+      lower.includes('revertir pago') ||
+      lower.includes('deshacer pago') ||
+      lower.includes('cancelar pago') ||
+      lower.includes('revertir factura pagada') ||
+      lower.includes('desmarcar pagada') ||
+      lower.includes('revertir el pago');
+
+    if (isRevertPayment) {
+      await this.startPaymentRevertFlow(tenantUser, rawFrom, text);
+      return;
+    }
+
+    // 3.4 Detección de intención para configurar empresa / días de pago / razón social
+    const isTenantConfig =
+      lower.includes('configurar empresa') ||
+      lower.includes('modificar empresa') ||
+      lower.includes('editar empresa') ||
+      lower.includes('datos empresa') ||
+      lower.includes('mi empresa') ||
+      lower.includes('dias de pago') ||
+      lower.includes('días de pago') ||
+      lower.includes('cambiar dias') ||
+      lower.includes('cambiar días') ||
+      lower.includes('razon social') ||
+      lower.includes('razón social') ||
+      lower === 'configuracion' ||
+      lower === 'configuración';
+
+    if (isTenantConfig) {
+      await this.startTenantEditFlow(tenantUser, rawFrom);
       return;
     }
 
@@ -1242,15 +2979,17 @@ Puedes consultar el estado de tus facturas, grilla de pagos y métricas por rubr
     helpMessage += `📦 *Tu Plan Activo:* ${planName}\n\n`;
     helpMessage += `Tienes disponibles las siguientes funciones:\n\n`;
     helpMessage += `📸 *1. Envía una foto o PDF:* Carga automática de factura y proveedor con IA.\n`;
-    helpMessage += `👥 *2. Registrar nuevo proveedor:* Escribe *"Registrar nuevo proveedor"* para dar de alta proveedores formales o informales.\n`;
-    helpMessage += `📝 *3. Carga manual de Factura / Ticket:* Escribe *"Cargar factura"* o *"Registrar factura"* si tienes un comprobante en papel.\n`;
+    helpMessage += `👥 *2. Registrar nuevo proveedor:* Escribe *"Registrar nuevo proveedor"* para dar de alta proveedores, o *"Editar proveedor"* para modificar sus datos (teléfono, CBU/alias, nombre, rubro).\n`;
+    helpMessage += `📝 *3. Facturas (Carga, Edición y Baja):* Escribe *"Cargar factura"* para registrar, *"Editar factura"* para modificar datos, o *"Anular factura"* para darla de baja.\n`;
     helpMessage += `📅 *4. Pagos:* Escribe *"Pagos"* para ver la grilla de pagos programados de los próximos 7 días y el total a pagar.\n`;
-    helpMessage += `💸 *5. Registrar Pago:* Escribe *"Registrar pago"* para marcar una factura como pagada (seleccionando proveedor y factura).\n`;
+    helpMessage += `💸 *5. Pagos (Registrar o Revertir):* Escribe *"Registrar pago"* para marcar una factura como pagada, o *"Revertir pago"* si se registró por equivocación.\n`;
     helpMessage += `🌐 *6. Dashboard Web:* Escribe *"Dashboard"* para acceder a tu panel de control y métricas.\n`;
 
     if (maxPhones > 1) {
       helpMessage += `📱 *7. Cargar Celular:* Escribe *"Cargar celular"* para autorizar a miembros de tu equipo (permite hasta ${maxPhones} celulares).\n`;
     }
+
+    helpMessage += `⚙️ *Configuración de Empresa:* Escribe *"Configurar empresa"* para modificar tu razón social o los días preferidos de pago de la grilla semanal.\n`;
 
     if (planCode === 'PROFESSIONAL' || planCode === 'ULTRA') {
       helpMessage += `\n✨ *Funciones adicionales de tu ${planName}:*\n`;

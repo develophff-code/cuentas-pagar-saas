@@ -62,8 +62,10 @@ export class DashboardService {
         }
       }
 
-      const rubro = inv.supplier.category?.name || 'General';
-      rubroBreakdown[rubro] = (rubroBreakdown[rubro] || 0) + amt;
+      if (inv.status !== 'CANCELADA') {
+        const rubro = inv.supplier.category?.name || 'General';
+        rubroBreakdown[rubro] = (rubroBreakdown[rubro] || 0) + amt;
+      }
     });
 
     const formatMoney = (val: number) =>
@@ -88,6 +90,8 @@ export class DashboardService {
 
           const statusBadge = inv.status === 'PAGADA'
             ? `<span class="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-100 rounded-full">Pagada</span>`
+            : inv.status === 'CANCELADA'
+            ? `<span class="px-2.5 py-1 text-xs font-semibold text-rose-700 bg-rose-100 rounded-full">Anulada</span>`
             : `<span class="px-2.5 py-1 text-xs font-semibold text-amber-700 bg-amber-100 rounded-full">En Grilla</span>`;
 
           return `
