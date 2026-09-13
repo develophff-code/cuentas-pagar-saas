@@ -21,7 +21,7 @@ async function main() {
       hasAiInsights: false,
       prices: {
         create: {
-          amount: 15000.00,
+          amount: 30000.00,
           currency: 'ARS',
           validFrom: new Date('2026-01-01'),
           validTo: null, // Vigente actual
@@ -45,7 +45,7 @@ async function main() {
       hasAiInsights: false,
       prices: {
         create: {
-          amount: 35000.00,
+          amount: 80000.00,
           currency: 'ARS',
           validFrom: new Date('2026-01-01'),
           validTo: null, // Vigente actual
@@ -62,14 +62,14 @@ async function main() {
       code: 'ULTRA',
       name: 'Plan Ultra',
       description: 'Todo lo profesional + Consultas analíticas e insights financieros con Inteligencia Artificial.',
-      maxUsers: 3,
+      maxUsers: 5,
       maxSuppliers: 150,
       maxInvoices: 500,
       hasSupplierReceipts: true,
       hasAiInsights: true,
       prices: {
         create: {
-          amount: 60000.00,
+          amount: 140000.00,
           currency: 'ARS',
           validFrom: new Date('2026-01-01'),
           validTo: null, // Vigente actual
