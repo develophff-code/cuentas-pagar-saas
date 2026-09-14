@@ -85,11 +85,26 @@ export class DashboardService {
           const amtStr = formatMoney(Number(inv.amount));
           const schedDateStr = formatDate(inv.scheduledPaymentDate);
           const dueDateStr = formatDate(inv.dueDate);
+          const paidDateStr = formatDate(inv.updatedAt || inv.scheduledPaymentDate);
           const bank = inv.supplier.bankAccounts[0];
           const bankStr = bank?.alias ? `Alias: ${bank.alias}` : bank?.cbuCvu ? `CBU: ${bank.cbuCvu}` : 'Sin datos';
 
+          let paymentMethod = 'No especificada';
+          if (inv.notes) {
+            const match = inv.notes.match(/forma de pago:\s*([^|\n\r]+)/i);
+            if (match) {
+              paymentMethod = match[1].trim();
+            } else if (['Contado', 'Transferencia', 'Cheque', 'Mercado Pago'].includes(inv.notes.trim())) {
+              paymentMethod = inv.notes.trim();
+            }
+          }
+
+          const escapedSupplier = inv.supplier.businessName.replace(/"/g, '&quot;');
+          const escapedMethod = paymentMethod.replace(/"/g, '&quot;');
+          const escapedInvoice = `${inv.invoiceType} Nº ${inv.invoiceNumber}`.replace(/"/g, '&quot;');
+
           const statusBadge = inv.status === 'PAGADA'
-            ? `<span class="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-100 rounded-full">Pagada</span>`
+            ? `<button type="button" data-supplier="${escapedSupplier}" data-invoice="${escapedInvoice}" data-amount="${amtStr}" data-date="${paidDateStr}" data-method="${escapedMethod}" onclick="openPaymentModal(this)" class="px-2.5 py-1 text-xs font-semibold text-emerald-700 bg-emerald-100 hover:bg-emerald-200 cursor-pointer rounded-full transition inline-flex items-center gap-1 shadow-sm" title="Click para ver detalle y forma de pago"><span>Pagada</span><span class="text-[10px]">ℹ️</span></button>`
             : inv.status === 'CANCELADA'
             ? `<span class="px-2.5 py-1 text-xs font-semibold text-rose-700 bg-rose-100 rounded-full">Anulada</span>`
             : `<span class="px-2.5 py-1 text-xs font-semibold text-amber-700 bg-amber-100 rounded-full">En Grilla</span>`;
@@ -255,6 +270,84 @@ export class DashboardService {
     </footer>
 
   </main>
+
+  <!-- Modal Detalle de Pago -->
+  <div id="payment-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 transform transition-all">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
+        <div class="flex items-center space-x-2">
+          <span class="text-2xl">💳</span>
+          <div>
+            <h3 class="text-lg font-bold text-slate-800">Detalle del Pago</h3>
+            <p class="text-xs text-slate-400">Información registrada en el comprobante</p>
+          </div>
+        </div>
+        <button onclick="closePaymentModal()" class="text-slate-400 hover:text-slate-600 rounded-lg p-1.5 hover:bg-slate-100 transition cursor-pointer">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </div>
+      
+      <div class="space-y-3 text-sm">
+        <div class="flex justify-between py-2 border-b border-slate-50">
+          <span class="text-slate-500">Proveedor:</span>
+          <span id="modal-supplier" class="font-semibold text-slate-800 text-right"></span>
+        </div>
+        <div class="flex justify-between py-2 border-b border-slate-50">
+          <span class="text-slate-500">Comprobante:</span>
+          <span id="modal-invoice" class="font-semibold text-slate-800 font-mono text-right"></span>
+        </div>
+        <div class="flex justify-between py-2 border-b border-slate-50">
+          <span class="text-slate-500">Monto Abonado:</span>
+          <span id="modal-amount" class="font-bold text-emerald-600 text-right text-base"></span>
+        </div>
+        <div class="flex justify-between py-2 border-b border-slate-50">
+          <span class="text-slate-500">Fecha de Registro:</span>
+          <span id="modal-date" class="font-medium text-slate-700 text-right"></span>
+        </div>
+        <div class="flex justify-between items-center py-3 bg-indigo-50/70 border border-indigo-100 rounded-xl px-4 mt-3">
+          <div class="flex items-center space-x-2">
+            <span class="text-base">💵</span>
+            <span class="text-indigo-900 font-medium text-xs uppercase tracking-wider">Forma de Pago:</span>
+          </div>
+          <span id="modal-method" class="px-3 py-1 bg-indigo-600 text-white font-bold rounded-lg text-xs shadow-sm"></span>
+        </div>
+      </div>
+
+      <div class="mt-6 flex justify-end">
+        <button onclick="closePaymentModal()" class="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-semibold transition cursor-pointer">
+          Cerrar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function openPaymentModal(btn) {
+      document.getElementById('modal-supplier').innerText = btn.getAttribute('data-supplier') || '-';
+      document.getElementById('modal-invoice').innerText = btn.getAttribute('data-invoice') || '-';
+      document.getElementById('modal-amount').innerText = btn.getAttribute('data-amount') || '-';
+      document.getElementById('modal-date').innerText = btn.getAttribute('data-date') || '-';
+      document.getElementById('modal-method').innerText = btn.getAttribute('data-method') || '-';
+      document.getElementById('payment-modal').classList.remove('hidden');
+    }
+
+    function closePaymentModal() {
+      document.getElementById('payment-modal').classList.add('hidden');
+    }
+
+    window.addEventListener('click', function(e) {
+      const modal = document.getElementById('payment-modal');
+      if (e.target === modal) {
+        closePaymentModal();
+      }
+    });
+
+    window.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        closePaymentModal();
+      }
+    });
+  </script>
 </body>
 </html>`;
   }

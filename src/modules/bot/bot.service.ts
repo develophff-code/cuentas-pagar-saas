@@ -3481,7 +3481,7 @@ _La factura quedó reprogramada en tu grilla de pagos._`;
       const invCount = s.invoices.length;
       msg += `${idx + 1}️⃣ *${s.businessName}* (${invCount} ${invCount === 1 ? 'factura pendiente' : 'facturas pendientes'} — Total: ${formattedAmt})\n`;
     });
-    msg += `\n_Responde con el número de la lista o escribe el nombre del proveedor:_`;
+    msg += `\n_Responde con el número de la lista o escribe el nombre del proveedor (o escribe *Cancelar* para salir):_`;
 
     await prisma.conversationSession.upsert({
       where: { phoneNumber: tenantUser.phoneNumber },
@@ -3489,7 +3489,7 @@ _La factura quedó reprogramada en tu grilla de pagos._`;
         state: 'PAYMENT_REG_SUPPLIER',
         contextData: {
           tenantId: tenantUser.tenantId,
-          suppliers: suppliersWithPending.map((s) => ({ id: s.id, name: s.businessName })),
+          suppliers: suppliersWithPending.map((s) => ({ id: s.id, name: s.businessName, phone: s.phone })),
         },
       },
       create: {
@@ -3497,7 +3497,7 @@ _La factura quedó reprogramada en tu grilla de pagos._`;
         state: 'PAYMENT_REG_SUPPLIER',
         contextData: {
           tenantId: tenantUser.tenantId,
-          suppliers: suppliersWithPending.map((s) => ({ id: s.id, name: s.businessName })),
+          suppliers: suppliersWithPending.map((s) => ({ id: s.id, name: s.businessName, phone: s.phone })),
         },
       },
     });
@@ -3506,7 +3506,7 @@ _La factura quedó reprogramada en tu grilla de pagos._`;
   }
 
   /**
-   * Maneja la selección del proveedor y luego la factura a marcar como pagada
+   * Maneja la selección del proveedor, selección de múltiples facturas con acumulador y forma de pago
    */
   private async handleRegisterPaymentStep(
     tenantUser: any,
@@ -3515,25 +3515,33 @@ _La factura quedó reprogramada en tu grilla de pagos._`;
     text: string
   ): Promise<void> {
     const ctx = (session.contextData as any) || {};
+    const input = text.trim();
+    const lower = input.toLowerCase();
+
+    // Comprobación de cancelación global en cualquier punto del flujo
+    if (lower === 'cancelar' || lower === 'salir' || lower === 'volver') {
+      await prisma.conversationSession.delete({ where: { id: session.id } });
+      await whatsappService.sendText(rawFrom, '❌ Operación cancelada.');
+      return;
+    }
 
     // Paso 1: Selección de Proveedor
     if (session.state === 'PAYMENT_REG_SUPPLIER') {
-      const input = text.trim().toLowerCase();
-      const suppliersList: { id: string; name: string }[] = ctx.suppliers || [];
+      const suppliersList: { id: string; name: string; phone?: string | null }[] = ctx.suppliers || [];
 
-      let selectedSupplier: { id: string; name: string } | undefined;
+      let selectedSupplier: { id: string; name: string; phone?: string | null } | undefined;
 
       const num = parseInt(input, 10);
       if (!isNaN(num) && num >= 1 && num <= suppliersList.length) {
         selectedSupplier = suppliersList[num - 1];
       } else {
-        selectedSupplier = suppliersList.find((s) => s.name.toLowerCase().includes(input));
+        selectedSupplier = suppliersList.find((s) => s.name.toLowerCase().includes(lower));
       }
 
       if (!selectedSupplier) {
         await whatsappService.sendText(
           rawFrom,
-          '⚠️ Proveedor no reconocido. Por favor responde con el *número* de la lista o el nombre del proveedor:'
+          '⚠️ Proveedor no reconocido. Por favor responde con el *número* de la lista o el nombre del proveedor (o escribe *Cancelar*):'
         );
         return;
       }
@@ -3556,14 +3564,21 @@ _La factura quedó reprogramada en tu grilla de pagos._`;
         return;
       }
 
+      const availableInvoices = pendingInvoices.map((i) => ({
+        id: i.id,
+        number: i.invoiceNumber,
+        type: i.invoiceType,
+        amount: Number(i.amount),
+        dueDate: i.dueDate.toLocaleDateString('es-AR'),
+      }));
+
       let invMsg = `🧾 *Facturas Pendientes de ${selectedSupplier.name}:*\n\n`;
-      pendingInvoices.forEach((inv, idx) => {
-        const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(inv.amount));
-        const dueStr = inv.dueDate.toLocaleDateString('es-AR');
-        invMsg += `${idx + 1}️⃣ *${inv.invoiceType} Nº ${inv.invoiceNumber}*\n`;
-        invMsg += `   💵 Monto: ${amtStr} — 📅 Vencimiento: ${dueStr}\n\n`;
+      availableInvoices.forEach((inv, idx) => {
+        const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(inv.amount);
+        invMsg += `${idx + 1}️⃣ *${inv.type} Nº ${inv.number}*\n`;
+        invMsg += `   💵 Monto: ${amtStr} — 📅 Vencimiento: ${inv.dueDate}\n\n`;
       });
-      invMsg += `_Responde con el número de la factura que deseas registrar como pagada:_`;
+      invMsg += `_Responde con el número de la factura a pagar (ej: 1) o varios separados por coma (ej: 1, 2).\nO escribe *Todas* para seleccionarlas todas (o *Cancelar* para salir):_`;
 
       await prisma.conversationSession.update({
         where: { id: session.id },
@@ -3573,12 +3588,9 @@ _La factura quedó reprogramada en tu grilla de pagos._`;
             tenantId: tenantUser.tenantId,
             supplierId: selectedSupplier.id,
             supplierName: selectedSupplier.name,
-            invoices: pendingInvoices.map((i) => ({
-              id: i.id,
-              number: i.invoiceNumber,
-              type: i.invoiceType,
-              amount: Number(i.amount),
-            })),
+            supplierPhone: selectedSupplier.phone,
+            availableInvoices,
+            selectedInvoices: [],
           },
         },
       });
@@ -3587,43 +3599,230 @@ _La factura quedó reprogramada en tu grilla de pagos._`;
       return;
     }
 
-    // Paso 2: Selección de Factura y Marcado como Pagada
+    // Paso 2: Selección múltiple de facturas con acumulador en tiempo real
     if (session.state === 'PAYMENT_REG_INVOICE') {
-      const input = text.trim().toLowerCase();
-      const invoicesList: { id: string; number: string; type: string; amount: number }[] = ctx.invoices || [];
+      let availableInvoices: { id: string; number: string; type: string; amount: number; dueDate: string }[] =
+        [...(ctx.availableInvoices || [])];
+      let selectedInvoices: { id: string; number: string; type: string; amount: number; dueDate: string }[] =
+        [...(ctx.selectedInvoices || [])];
 
-      let selectedInvoice: { id: string; number: string; type: string; amount: number } | undefined;
+      // Si el usuario indica "listo" o "continuar" para pasar a la forma de pago
+      if (lower === 'listo' || lower === 'continuar' || lower === 'pagar' || lower === 'fin' || lower === 'ok') {
+        if (selectedInvoices.length === 0) {
+          await whatsappService.sendText(
+            rawFrom,
+            '⚠️ Aún no has seleccionado ninguna factura. Responde con el número de la factura que deseas pagar:'
+          );
+          return;
+        }
 
-      const num = parseInt(input, 10);
-      if (!isNaN(num) && num >= 1 && num <= invoicesList.length) {
-        selectedInvoice = invoicesList[num - 1];
-      } else {
-        selectedInvoice = invoicesList.find((i) => i.number.toLowerCase().includes(input));
+        const totalAccum = selectedInvoices.reduce((sum, inv) => sum + inv.amount, 0);
+        const totalFormatted = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(totalAccum);
+
+        let methodMsg = `📊 *Total acumulado a pagar:* ${totalFormatted} (${selectedInvoices.length} ${selectedInvoices.length === 1 ? 'comprobante' : 'comprobantes'})\n\n`;
+        methodMsg += `💳 *Selecciona la Forma de Pago:*\n\n`;
+        methodMsg += `1️⃣ Contado\n`;
+        methodMsg += `2️⃣ Transferencia\n`;
+        methodMsg += `3️⃣ Cheque\n`;
+        methodMsg += `4️⃣ Mercado Pago\n\n`;
+        methodMsg += `_Responde con el número de la opción (1 al 4) o escribe el nombre de la forma de pago:_`;
+
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'PAYMENT_REG_METHOD',
+            contextData: {
+              ...ctx,
+              availableInvoices,
+              selectedInvoices,
+            },
+          },
+        });
+
+        await whatsappService.sendText(rawFrom, methodMsg);
+        return;
       }
 
-      if (!selectedInvoice) {
+      // Si el usuario escribe "todas" o "todos"
+      if (lower === 'todas' || lower === 'todos' || lower === 'todo') {
+        selectedInvoices = [...selectedInvoices, ...availableInvoices];
+        availableInvoices = [];
+      } else {
+        // Parsear números ingresados (ej: "1", "1, 2", "1 y 2", "1 2") o búsqueda por número de comprobante
+        const tokens = input.split(/[,;\s+y]+/).map((t) => t.trim()).filter(Boolean);
+        let matchedIndices: number[] = [];
+
+        for (const token of tokens) {
+          const num = parseInt(token, 10);
+          if (!isNaN(num) && num >= 1 && num <= availableInvoices.length) {
+            matchedIndices.push(num - 1);
+          } else {
+            const idx = availableInvoices.findIndex((inv) =>
+              inv.number.toLowerCase().includes(token.toLowerCase())
+            );
+            if (idx !== -1 && !matchedIndices.includes(idx)) {
+              matchedIndices.push(idx);
+            }
+          }
+        }
+
+        matchedIndices = Array.from(new Set(matchedIndices));
+
+        if (matchedIndices.length === 0) {
+          await whatsappService.sendText(
+            rawFrom,
+            `⚠️ Opción no reconocida. Responde con el número de la lista (ej: 1 o 1, 2), o escribe *Listo* si ya terminaste de seleccionar:`
+          );
+          return;
+        }
+
+        matchedIndices.sort((a, b) => b - a);
+        for (const idx of matchedIndices) {
+          const [picked] = availableInvoices.splice(idx, 1);
+          selectedInvoices.push(picked);
+        }
+      }
+
+      const totalAccum = selectedInvoices.reduce((sum, inv) => sum + inv.amount, 0);
+      const totalFormatted = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(totalAccum);
+
+      // Si no quedan más facturas pendientes del proveedor, pasar directamente a seleccionar forma de pago
+      if (availableInvoices.length === 0) {
+        let methodMsg = `✅ *Seleccionaste todas las facturas de ${ctx.supplierName}.*\n\n`;
+        methodMsg += `📊 *Total acumulado a pagar:* ${totalFormatted} (${selectedInvoices.length} ${selectedInvoices.length === 1 ? 'comprobante' : 'comprobantes'})\n\n`;
+        methodMsg += `💳 *Selecciona la Forma de Pago:*\n\n`;
+        methodMsg += `1️⃣ Contado\n`;
+        methodMsg += `2️⃣ Transferencia\n`;
+        methodMsg += `3️⃣ Cheque\n`;
+        methodMsg += `4️⃣ Mercado Pago\n\n`;
+        methodMsg += `_Responde con el número de la opción (1 al 4) o escribe el nombre de la forma de pago (o *Cancelar*):_`;
+
+        await prisma.conversationSession.update({
+          where: { id: session.id },
+          data: {
+            state: 'PAYMENT_REG_METHOD',
+            contextData: {
+              ...ctx,
+              availableInvoices,
+              selectedInvoices,
+            },
+          },
+        });
+
+        await whatsappService.sendText(rawFrom, methodMsg);
+        return;
+      }
+
+      // Si aún quedan facturas disponibles, mostrar el acumulado y permitir seguir sumando o finalizar
+      let contMsg = `✅ *Factura agregada al pago.*\n\n`;
+      contMsg += `📊 *Total acumulado a pagar:* ${totalFormatted} (${selectedInvoices.length} ${selectedInvoices.length === 1 ? 'factura seleccionada' : 'facturas seleccionadas'})\n\n`;
+      contMsg += `¿Deseas agregar otra factura de *${ctx.supplierName}*?\n\n`;
+
+      availableInvoices.forEach((inv, idx) => {
+        const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(inv.amount);
+        contMsg += `${idx + 1}️⃣ *${inv.type} Nº ${inv.number}* — ${amtStr} (Vto: ${inv.dueDate})\n`;
+      });
+
+      contMsg += `\n👉 Responde con el *número* para agregar otra factura, o escribe *Listo* (o *Continuar*) para proceder al pago con el total acumulado.\n_(O escribe *Cancelar* para salir)_`;
+
+      await prisma.conversationSession.update({
+        where: { id: session.id },
+        data: {
+          state: 'PAYMENT_REG_INVOICE',
+          contextData: {
+            ...ctx,
+            availableInvoices,
+            selectedInvoices,
+          },
+        },
+      });
+
+      await whatsappService.sendText(rawFrom, contMsg);
+      return;
+    }
+
+    // Paso 3: Selección de Forma de Pago y Asentado Definitivo
+    if (session.state === 'PAYMENT_REG_METHOD') {
+      let paymentMethod: string | null = null;
+      if (input === '1' || lower.includes('contado') || lower.includes('efectivo')) {
+        paymentMethod = 'Contado';
+      } else if (
+        input === '2' ||
+        lower.includes('transferencia') ||
+        lower.includes('transf') ||
+        lower.includes('banco') ||
+        lower.includes('cbu')
+      ) {
+        paymentMethod = 'Transferencia';
+      } else if (input === '3' || lower.includes('cheque') || lower.includes('echeq')) {
+        paymentMethod = 'Cheque';
+      } else if (
+        input === '4' ||
+        lower.includes('mercado pago') ||
+        lower.includes('mercadopago') ||
+        lower.includes('mp')
+      ) {
+        paymentMethod = 'Mercado Pago';
+      }
+
+      if (!paymentMethod) {
         await whatsappService.sendText(
           rawFrom,
-          '⚠️ Factura no reconocida. Por favor responde con el *número* de la lista:'
+          '⚠️ Opción no válida. Por favor responde con un número del *1 al 4* para elegir la forma de pago:\n\n1️⃣ Contado\n2️⃣ Transferencia\n3️⃣ Cheque\n4️⃣ Mercado Pago\n\n_(O escribe *Cancelar* para salir)_'
         );
         return;
       }
 
-      const updated = await prisma.invoice.update({
-        where: { id: selectedInvoice.id },
-        data: {
-          status: 'PAGADA',
-        },
-        include: {
-          supplier: true,
-          tenant: true,
-        },
+      const selectedInvoices: { id: string; number: string; type: string; amount: number; dueDate: string }[] =
+        ctx.selectedInvoices || [];
+      const invoiceIds = selectedInvoices.map((inv) => inv.id);
+
+      const currentInvoices = await prisma.invoice.findMany({
+        where: { id: { in: invoiceIds }, tenantId: tenantUser.tenantId },
+        include: { supplier: true, tenant: true },
       });
+
+      for (const inv of currentInvoices) {
+        let updatedNotes = `Forma de pago: ${paymentMethod}`;
+        if (inv.notes && inv.notes.trim()) {
+          if (/forma de pago:\s*[^|\n\r]+/i.test(inv.notes)) {
+            updatedNotes = inv.notes.replace(/forma de pago:\s*[^|\n\r]+/i, `Forma de pago: ${paymentMethod}`);
+          } else {
+            updatedNotes = `${inv.notes.trim()} | Forma de pago: ${paymentMethod}`;
+          }
+        }
+
+        await prisma.invoice.update({
+          where: { id: inv.id },
+          data: {
+            status: 'PAGADA',
+            notes: updatedNotes,
+          },
+        });
+      }
 
       await prisma.conversationSession.delete({ where: { id: session.id } });
 
-      const amtFormatted = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(updated.amount));
+      const totalAmt = selectedInvoices.reduce((sum, i) => sum + i.amount, 0);
+      const amtFormatted = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(totalAmt);
       const payDateStr = new Date().toLocaleDateString('es-AR');
+
+      const supplier = currentInvoices[0]?.supplier;
+      const supplierName = supplier?.businessName || ctx.supplierName;
+
+      let confirmMsg = `🎉 *¡Pago Registrado Exitosamente!*\n\n`;
+      confirmMsg += `🏢 *Proveedor:* ${supplierName}\n`;
+      confirmMsg += `💳 *Forma de Pago:* ${paymentMethod}\n`;
+      confirmMsg += `📅 *Fecha de Pago:* ${payDateStr}\n\n`;
+      confirmMsg += `🧾 *Comprobantes Pagados (${selectedInvoices.length}):*\n`;
+
+      selectedInvoices.forEach((inv) => {
+        const invAmt = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(inv.amount);
+        confirmMsg += `• ${inv.type} Nº ${inv.number} — ${invAmt}\n`;
+      });
+
+      confirmMsg += `\n💰 *Total Pagado:* ${amtFormatted}\n\n`;
+      confirmMsg += `_Los comprobantes quedaron marcados como PAGADOS en tu grilla y Dashboard._`;
 
       const canSendReceipt =
         tenantUser.tenant.plan?.hasSupplierReceipts ||
@@ -3631,37 +3830,19 @@ _La factura quedó reprogramada en tu grilla de pagos._`;
         tenantUser.tenant.plan?.code === 'ULTRA';
 
       const hasSupplierPhone =
-        updated.supplier.phone &&
-        updated.supplier.phone.trim().length >= 8 &&
-        !updated.supplier.phone.toLowerCase().includes('sin teléfono');
+        supplier?.phone &&
+        supplier.phone.trim().length >= 8 &&
+        !supplier.phone.toLowerCase().includes('sin teléfono');
 
       if (canSendReceipt && hasSupplierPhone) {
-        const confirmWithReceipt = `🎉 *¡Pago Registrado Exitosamente!*
-
-🏢 *Proveedor:* ${updated.supplier.businessName}
-🧾 *Comprobante:* ${updated.invoiceType} Nº ${updated.invoiceNumber}
-💰 *Monto Pagado:* ${amtFormatted}
-📅 *Fecha de Pago:* ${payDateStr}
-
-_El comprobante quedó marcado como PAGADO en tu grilla y Dashboard._
-
-¿Deseas enviar la constancia de pago formal por WhatsApp a *${updated.supplier.businessName}* (+${updated.supplier.phone})?`;
-
-        await whatsappService.sendButtons(rawFrom, confirmWithReceipt, [
-          { id: `enviar_comprobante_${updated.id}`, text: 'Enviar Comprobante' },
+        const receiptPrompt = `${confirmMsg}\n\n¿Deseas enviar la constancia de pago formal por WhatsApp a *${supplierName}* (+${supplier.phone})?`;
+        const receiptIds = invoiceIds.join(',');
+        await whatsappService.sendButtons(rawFrom, receiptPrompt, [
+          { id: `enviar_comprobante_${receiptIds}`, text: 'Enviar Comprobante' },
           { id: 'no_enviar_comprobante', text: 'No enviar' },
         ]);
       } else {
-        const simpleConfirm = `🎉 *¡Pago Registrado Exitosamente!*
-
-🏢 *Proveedor:* ${updated.supplier.businessName}
-🧾 *Comprobante:* ${updated.invoiceType} Nº ${updated.invoiceNumber}
-💰 *Monto Pagado:* ${amtFormatted}
-📅 *Fecha de Pago:* ${payDateStr}
-
-_El comprobante quedó marcado como PAGADO en tu grilla y Dashboard._`;
-
-        await whatsappService.sendText(rawFrom, simpleConfirm);
+        await whatsappService.sendText(rawFrom, confirmMsg);
       }
 
       return;
@@ -3669,54 +3850,82 @@ _El comprobante quedó marcado como PAGADO en tu grilla y Dashboard._`;
   }
 
   /**
-   * Envía un mensaje formal de comprobante de pago al WhatsApp del proveedor
+   * Envía un mensaje formal de comprobante de pago al WhatsApp del proveedor (soporta uno o múltiples comprobantes)
    */
-  private async sendSupplierPaymentReceipt(tenantUser: any, rawFrom: string, invoiceId: string): Promise<void> {
-    const invoice = await prisma.invoice.findFirst({
-      where: { id: invoiceId, tenantId: tenantUser.tenantId },
+  private async sendSupplierPaymentReceipt(tenantUser: any, rawFrom: string, invoiceIdStr: string): Promise<void> {
+    const invoiceIds = invoiceIdStr.split(',').map((id) => id.trim()).filter(Boolean);
+    const invoices = await prisma.invoice.findMany({
+      where: { id: { in: invoiceIds }, tenantId: tenantUser.tenantId },
       include: { supplier: true, tenant: true },
     });
 
-    if (!invoice) {
+    if (!invoices || invoices.length === 0) {
       await whatsappService.sendText(rawFrom, '⚠️ No se encontró la factura solicitada.');
       return;
     }
 
-    if (!invoice.supplier.phone || invoice.supplier.phone.length < 8) {
+    const firstInv = invoices[0];
+    if (!firstInv.supplier.phone || firstInv.supplier.phone.length < 8) {
       await whatsappService.sendText(rawFrom, '⚠️ El proveedor no tiene un número de teléfono válido registrado.');
       return;
     }
 
-    const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(invoice.amount));
+    const totalAmount = invoices.reduce((sum, inv) => sum + Number(inv.amount), 0);
+    const amtStr = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(totalAmount);
     const dateStr = new Date().toLocaleDateString('es-AR');
 
-    const receiptMessage = `📄 *Constancia de Pago — ${invoice.tenant.businessName}*
+    let payMethodStr = '';
+    if (firstInv.notes) {
+      const match = firstInv.notes.match(/forma de pago:\s*([^|\n\r]+)/i);
+      if (match) {
+        payMethodStr = `\n💳 *Forma de Pago:* ${match[1].trim()}`;
+      }
+    }
 
-Estimado/a *${invoice.supplier.businessName}*,
-Le informamos que se ha registrado el pago de su comprobante:
+    let invDetails = '';
+    let templateInvoiceDesc = '';
+    if (invoices.length === 1) {
+      invDetails = `🧾 *Comprobante:* ${firstInv.invoiceType} Nº ${firstInv.invoiceNumber}`;
+      templateInvoiceDesc = `${firstInv.invoiceType} Nº ${firstInv.invoiceNumber}`;
+    } else {
+      invDetails =
+        `🧾 *Comprobantes Abonados (${invoices.length}):*\n` +
+        invoices
+          .map(
+            (inv) =>
+              `• ${inv.invoiceType} Nº ${inv.invoiceNumber} (${new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(inv.amount))})`
+          )
+          .join('\n');
+      templateInvoiceDesc = `${invoices.length} facturas (${invoices.map((i) => i.invoiceNumber).slice(0, 2).join(', ')}${invoices.length > 2 ? '...' : ''})`;
+    }
 
-🧾 *Comprobante:* ${invoice.invoiceType} Nº ${invoice.invoiceNumber}
-💰 *Monto Abonado:* ${amtStr}
+    const receiptMessage = `📄 *Constancia de Pago — ${firstInv.tenant.businessName}*
+
+Estimado/a *${firstInv.supplier.businessName}*,
+Le informamos que se ha registrado el pago de sus comprobantes:
+
+${invDetails}
+💰 *Monto Abonado:* ${amtStr}${payMethodStr}
 📅 *Fecha de Pago:* ${dateStr}
 
-_Este mensaje es un comprobante automático emitido por ${invoice.tenant.businessName}._`;
+_Este mensaje es un comprobante automático emitido por ${firstInv.tenant.businessName}._`;
 
     // Intentar primero con la Plantilla Oficial de Meta (llega aunque el proveedor nunca haya escrito al bot)
     const templateName = env.YCLOUD_PAYMENT_TEMPLATE_NAME;
     const templateLang = env.YCLOUD_TEMPLATE_LANG;
 
     try {
-      await whatsappService.sendTemplate(invoice.supplier.phone, templateName, templateLang, [
-        invoice.supplier.businessName,
-        invoice.tenant.businessName,
-        `${invoice.invoiceType} Nº ${invoice.invoiceNumber}`,
+      await whatsappService.sendTemplate(firstInv.supplier.phone, templateName, templateLang, [
+        firstInv.supplier.businessName,
+        firstInv.tenant.businessName,
+        templateInvoiceDesc,
         amtStr,
         dateStr,
       ]);
 
       await whatsappService.sendText(
         rawFrom,
-        `📲 *¡Comprobante enviado con éxito!*\nSe notificó a *${invoice.supplier.businessName}* al número +${invoice.supplier.phone}.`
+        `📲 *¡Comprobante enviado con éxito!*\nSe notificó a *${firstInv.supplier.businessName}* al número +${firstInv.supplier.phone}.`
       );
     } catch (templateErr: any) {
       console.warn(
@@ -3725,16 +3934,16 @@ _Este mensaje es un comprobante automático emitido por ${invoice.tenant.busines
       );
 
       try {
-        await whatsappService.sendText(invoice.supplier.phone, receiptMessage);
+        await whatsappService.sendText(firstInv.supplier.phone, receiptMessage);
         await whatsappService.sendText(
           rawFrom,
-          `📲 *¡Comprobante enviado con éxito!*\nSe notificó a *${invoice.supplier.businessName}* al número +${invoice.supplier.phone}.`
+          `📲 *¡Comprobante enviado con éxito!*\nSe notificó a *${firstInv.supplier.businessName}* al número +${firstInv.supplier.phone}.`
         );
       } catch (err: any) {
         console.error('[BotService] Error enviando comprobante a proveedor:', err?.response?.data || err?.message);
         await whatsappService.sendText(
           rawFrom,
-          `⚠️ No se pudo entregar el mensaje al proveedor (+${invoice.supplier.phone}). Verifique que la plantilla esté aprobada en YCloud o que el número cuente con WhatsApp activo.`
+          `⚠️ No se pudo entregar el mensaje al proveedor (+${firstInv.supplier.phone}). Verifique que la plantilla esté aprobada en YCloud o que el número cuente con WhatsApp activo.`
         );
       }
     }
