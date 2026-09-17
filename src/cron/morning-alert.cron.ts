@@ -58,7 +58,7 @@ export async function runMorningPaymentNotifications(): Promise<void> {
       });
 
       body += `💰 *Total a Desembolsar Hoy:* $ ${totalAmount.toLocaleString('es-AR')}\n\n`;
-      body += `_Para posponer un pago responde: "Posponer [Nº]" o accede a tu Dashboard._`;
+      body += `_Para posponer un pago responde: "Posponer [Nº]" o accede a tu Tablero de Control._`;
 
       // Enviar a todos los celulares autorizados de la empresa
       for (const user of tenant.users) {

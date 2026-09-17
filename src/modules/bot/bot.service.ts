@@ -192,7 +192,7 @@ Automatiza la recepción de boletas y pagos a tus proveedores en segundos:
 🤖 *Extracción automática* de CUIT, montos, vencimientos y CBU/Alias.
 📅 *Grilla semanal inteligente* de pagos para no entrar en mora.
 ☀️ *Reporte matutino diario* con los pagos de las próximas 24 horas.
-📊 *Dashboard web* en tiempo real con analytics y rubros.
+📊 *Tablero de Control* en tiempo real con analytics y rubros.
 
 *Planes de Suscripción Disponibles:*
 1️⃣ *Básico:* Hasta 100 facturas/mes, 25 proveedores, 1 celular.
@@ -1455,7 +1455,7 @@ _${detail}_
 ⏰ *Nuevo Vencimiento:* ${dueStr}
 📅 *Fecha en Grilla Semanal:* *${schedStr}*
 
-💡 _Los cambios ya se encuentran reflejados en tu Grilla de Pagos y Dashboard._`;
+💡 _Los cambios ya se encuentran reflejados en tu Grilla de Pagos y Tablero de Control._`;
 
     await whatsappService.sendText(rawFrom, msg);
   }
@@ -2200,7 +2200,7 @@ _Responde con el número de la opción (1 o 2):_`;
 📄 *Comprobante:* ${updated.invoiceType || 'Factura'} Nº ${updated.invoiceNumber}
 💵 *Monto:* ${amtStr}
 
-💡 _La factura volvió a estar activa en tu Grilla Semanal de Pagos y Dashboard._`;
+💡 _La factura volvió a estar activa en tu Grilla Semanal de Pagos y Tablero de Control._`;
 
         await whatsappService.sendText(rawFrom, successMsg);
         return;
@@ -2392,7 +2392,7 @@ _Responde con el número de la opción (1 al 5) o escribe días específicos sep
 🏢 *Nueva Razón Social:* ${updated.businessName}
 🆔 *CUIT:* ${updated.cuit}
 
-💡 _El nuevo nombre se verá reflejado en tus reportes, dashboard y comprobantes enviados a proveedores._`;
+💡 _El nuevo nombre se verá reflejado en tus reportes, Tablero de Control y comprobantes enviados a proveedores._`;
 
       await whatsappService.sendText(rawFrom, msg);
       return;
@@ -2627,7 +2627,7 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
     }
 
     if (text === 'no_enviar_comprobante' || lower === 'no enviar') {
-      await whatsappService.sendText(rawFrom, '👍 Perfecto. El pago quedó registrado en tu grilla y Dashboard.');
+      await whatsappService.sendText(rawFrom, '👍 Perfecto. El pago quedó registrado en tu grilla y Tablero de Control.');
       return;
     }
 
@@ -2755,21 +2755,7 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       return;
     }
 
-    // 3.3 Detección de intención para revertir pago
-    const isRevertPayment =
-      lower.includes('revertir pago') ||
-      lower.includes('deshacer pago') ||
-      lower.includes('cancelar pago') ||
-      lower.includes('revertir factura pagada') ||
-      lower.includes('desmarcar pagada') ||
-      lower.includes('revertir el pago');
-
-    if (isRevertPayment) {
-      await this.startPaymentRevertFlow(tenantUser, rawFrom, text);
-      return;
-    }
-
-    // 3.4 Detección de intención para configurar empresa / días de pago / razón social
+    // 3.3 Detección de intención para configurar empresa / días de pago / razón social
     const isTenantConfig =
       lower.includes('configurar empresa') ||
       lower.includes('modificar empresa') ||
@@ -2840,11 +2826,12 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       return;
     }
 
-    // 5. Registrar Pago de Factura (Todos los Planes)
+    // 5. Registrar Pagos de Facturas (Todos los Planes)
     const isRegisterPayment =
       lower === '5' ||
       lower === '5.' ||
       lower.includes('registrar pago') ||
+      lower.includes('registrar pagos') ||
       lower.includes('pagar factura') ||
       lower.includes('marcar pagada') ||
       lower.includes('pago realizado') ||
@@ -2856,15 +2843,33 @@ _El pago quedó agendado. Recibirás el recordatorio la mañana de su pago._`;
       return;
     }
 
-    // 6. Dashboard Web
-    if (
+    // 6. Revertir Pagos de Facturas (Todos los Planes)
+    const isRevertPayment =
       lower === '6' ||
       lower === '6.' ||
+      lower.includes('revertir pago') ||
+      lower.includes('revertir pagos') ||
+      lower.includes('deshacer pago') ||
+      lower.includes('cancelar pago') ||
+      lower.includes('revertir factura pagada') ||
+      lower.includes('desmarcar pagada') ||
+      lower.includes('revertir el pago');
+
+    if (isRevertPayment) {
+      await this.startPaymentRevertFlow(tenantUser, rawFrom, text);
+      return;
+    }
+
+    // 7. Tablero de Control
+    if (
+      lower === '7' ||
+      lower === '7.' ||
+      lower === 'tablero' ||
+      lower.includes('tablero') ||
       lower.includes('dashboard') ||
-      lower.includes('panel') ||
-      lower.includes('web')
+      lower.includes('panel')
     ) {
-      const dashboardMsg = `🌐 *Dashboard Web en Tiempo Real*
+      const dashboardMsg = `🌐 *Tablero de Control en Tiempo Real*
 
 Puedes consultar el estado de tus facturas, grilla de pagos y métricas por rubro en:
 🔗 ${env.APP_BASE_URL}/api/dashboard/grid?tenantId=${tenantUser.tenantId}
@@ -2874,10 +2879,10 @@ Puedes consultar el estado de tus facturas, grilla de pagos y métricas por rubr
       return;
     }
 
-    // 7. Cargar / Autorizar Celular (Planes Profesional y Ultra)
+    // 8. Cargar / Autorizar Celular (Planes Profesional y Ultra)
     const isAddPhone =
-      lower === '7' ||
-      lower === '7.' ||
+      lower === '8' ||
+      lower === '8.' ||
       lower.includes('cargar celular') ||
       lower.includes('agregar celular') ||
       lower.includes('nuevo celular') ||
@@ -2891,10 +2896,10 @@ Puedes consultar el estado de tus facturas, grilla de pagos y métricas por rubr
       return;
     }
 
-    // 8. Métricas y Gastos por Rubro (Planes Profesional y Ultra)
+    // 9. Métricas y Gastos por Rubro (Planes Profesional y Ultra)
     const isRubros =
-      lower === '8' ||
-      lower === '8.' ||
+      lower === '9' ||
+      lower === '9.' ||
       lower.includes('metrica') ||
       lower.includes('métrica') ||
       lower.includes('rubro') ||
@@ -2906,10 +2911,10 @@ Puedes consultar el estado de tus facturas, grilla de pagos y métricas por rubr
       return;
     }
 
-    // 9. Envío de Comprobantes a Proveedores (Planes Profesional y Ultra)
+    // 10. Envío de Comprobantes a Proveedores (Planes Profesional y Ultra)
     const isSupplierReceipt =
-      lower === '9' ||
-      lower === '9.' ||
+      lower === '10' ||
+      lower === '10.' ||
       lower.includes('envio a proveedor') ||
       lower.includes('envío a proveedor') ||
       lower.includes('comprobante a proveedor') ||
@@ -2920,10 +2925,10 @@ Puedes consultar el estado de tus facturas, grilla de pagos y métricas por rubr
       return;
     }
 
-    // 10. Consultas de IA / Insights (Plan Ultra)
+    // 11. Consultas de IA / Insights (Plan Ultra)
     const isAiQuery =
-      lower === '10' ||
-      lower === '10.' ||
+      lower === '11' ||
+      lower === '11.' ||
       lower.includes('insight') ||
       lower.includes('cuanto gastamos') ||
       lower.includes('analisis financiero') ||
@@ -2982,23 +2987,24 @@ Puedes consultar el estado de tus facturas, grilla de pagos y métricas por rubr
     helpMessage += `👥 *2. Registrar nuevo proveedor:* Escribe *"Registrar nuevo proveedor"* para dar de alta proveedores, o *"Editar proveedor"* para modificar sus datos (teléfono, CBU/alias, nombre, rubro).\n`;
     helpMessage += `📝 *3. Facturas (Carga, Edición y Baja):* Escribe *"Cargar factura"* para registrar, *"Editar factura"* para modificar datos, o *"Anular factura"* para darla de baja.\n`;
     helpMessage += `📅 *4. Pagos:* Escribe *"Pagos"* para ver la grilla de pagos programados de los próximos 7 días y el total a pagar.\n`;
-    helpMessage += `💸 *5. Pagos (Registrar o Revertir):* Escribe *"Registrar pago"* para marcar una factura como pagada, o *"Revertir pago"* si se registró por equivocación.\n`;
-    helpMessage += `🌐 *6. Dashboard Web:* Escribe *"Dashboard"* para acceder a tu panel de control y métricas.\n`;
+    helpMessage += `💸 *5. Registrar Pagos:* Escribe *"Registrar pago"* para marcar facturas como pagadas.\n`;
+    helpMessage += `↩️ *6. Revertir Pagos:* Escribe *"Revertir pago"* si se registró un pago por equivocación.\n`;
+    helpMessage += `🌐 *7. Tablero de Control:* Escribe *"Tablero"* para acceder a tu panel de control y métricas.\n`;
 
     if (maxPhones > 1) {
-      helpMessage += `📱 *7. Cargar Celular:* Escribe *"Cargar celular"* para autorizar a miembros de tu equipo (permite hasta ${maxPhones} celulares).\n`;
+      helpMessage += `📱 *8. Cargar Celular:* Escribe *"Cargar celular"* para autorizar a miembros de tu equipo (permite hasta ${maxPhones} celulares).\n`;
     }
 
     helpMessage += `⚙️ *Configuración de Empresa:* Escribe *"Configurar empresa"* para modificar tu razón social o los días preferidos de pago de la grilla semanal.\n`;
 
     if (planCode === 'PROFESSIONAL' || planCode === 'ULTRA') {
       helpMessage += `\n✨ *Funciones adicionales de tu ${planName}:*\n`;
-      helpMessage += `📊 *8. Métricas por Rubro:* Escribe *"Métricas por rubro"* para ver el desglose consolidado de gastos por categoría.\n`;
-      helpMessage += `📲 *9. Envío a Proveedores:* Escribe *"Enviar comprobante"* para enviar la constancia de pago al WhatsApp del proveedor.\n`;
+      helpMessage += `📊 *9. Métricas por Rubro:* Escribe *"Métricas por rubro"* para ver el desglose consolidado de gastos por categoría.\n`;
+      helpMessage += `📲 *10. Envío a Proveedores:* Escribe *"Enviar comprobante"* para enviar la constancia de pago al WhatsApp del proveedor.\n`;
     }
 
     if (planCode === 'ULTRA') {
-      helpMessage += `🤖 *10. Consultas Financieras con IA:* Pregunta lo que necesites en lenguaje natural (ej: *"¿Cuánto le pagamos este mes a cada rubro?"*, *"¿Qué proveedor acumula más deuda?"*).\n`;
+      helpMessage += `🤖 *11. Consultas Financieras con IA:* Pregunta lo que necesites en lenguaje natural (ej: *"¿Cuánto le pagamos este mes a cada rubro?"*, *"¿Qué proveedor acumula más deuda?"*).\n`;
     }
 
     if (planCode === 'BASIC') {
@@ -3822,7 +3828,7 @@ _La factura quedó reprogramada en tu grilla de pagos._`;
       });
 
       confirmMsg += `\n💰 *Total Pagado:* ${amtFormatted}\n\n`;
-      confirmMsg += `_Los comprobantes quedaron marcados como PAGADOS en tu grilla y Dashboard._`;
+      confirmMsg += `_Los comprobantes quedaron marcados como PAGADOS en tu grilla y Tablero de Control._`;
 
       const canSendReceipt =
         tenantUser.tenant.plan?.hasSupplierReceipts ||
@@ -3999,7 +4005,7 @@ _Este mensaje es un comprobante automático emitido por ${firstInv.tenant.busine
     const totalFormatted = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(grandTotal);
     msg += `💰 *Gasto Total Acumulado:* ${totalFormatted}\n`;
     msg += `🧾 *Total de Comprobantes:* ${totalInvoices}\n\n`;
-    msg += `💡 _Para ver los gráficos interactivos, escribe *"Dashboard"*.`;
+    msg += `💡 _Para ver los gráficos interactivos, escribe *"Tablero"*.`;
 
     await whatsappService.sendText(rawFrom, msg);
   }
