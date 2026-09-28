@@ -2,7 +2,7 @@
 
 Plataforma SaaS operada de forma nativa a través de **WhatsApp** (vía **YCloud / WhatsApp Cloud API**) para la automatización integral del ciclo de cuentas a pagar: recepción inteligente de facturas y tickets, ordenamiento en grilla semanal de corte, emisión de comprobantes formales de pago, panel web en tiempo real y análisis financiero con Inteligencia Artificial.
 
-* **Dominio Producción:** [https://apagar.averiq.cloud](https://apagar.averiq.cloud)
+* **Dominio Producción:** [https://apagar.averiqsj.com](https://apagar.averiqsj.com)
 * **Repositorio:** [https://github.com/develophff-code/cuentas-pagar-saas](https://github.com/develophff-code/cuentas-pagar-saas)
 * **Rama Activa de Desarrollo:** `develop`
 
@@ -38,7 +38,7 @@ Plataforma SaaS operada de forma nativa a través de **WhatsApp** (vía **YCloud
 | `Registrar pago` | Asienta el pago de una factura y ofrece enviar el comprobante al WhatsApp del proveedor. |
 | `Revertir pago` | Deshace un pago registrado por equivocación, volviendo la factura a estado `EN_GRILLA`. |
 | `Configurar empresa` / `Días de pago` | Modifica la razón social o los días preferidos de pago (con recálculo automático de la grilla). |
-| `Dashboard` | Genera el enlace de acceso directo al panel web en tiempo real. |
+| `Tablero` | Genera el enlace de acceso directo al Tablero de Control en tiempo real. |
 | `Cargar celular` | Autoriza celulares adicionales del equipo (hasta 3 para Profesional y Ultra). |
 | `Métricas por rubro` | Desglose consolidado de gastos acumulados por rubro comercial (Profesional y Ultra). |
 | *Consulta en lenguaje natural* | Preguntas financieras analizadas con IA (exclusivo Plan Ultra). |
@@ -51,7 +51,7 @@ Plataforma SaaS operada de forma nativa a través de **WhatsApp** (vía **YCloud
 flowchart TD
     User["📱 Usuario / Proveedor"] <-->|"WhatsApp Oficial"| Meta["🌐 WhatsApp Cloud API - Meta"]
     Meta <-->|"Webhooks / Mensajes"| YCloud["☁️ YCloud Gateway"]
-    YCloud <-->|"HTTPS - SSL"| Apache["🛡️ Apache2 Reverse Proxy - apagar.averiq.cloud"]
+    YCloud <-->|"HTTPS - SSL"| Apache["🛡️ Apache2 Reverse Proxy - apagar.averiqsj.com"]
     Apache <-->|"ProxyPass Puerto 4000"| Fastify["⚡ Backend Fastify / Node.js - PM2"]
     Fastify <-->|"Buffer Foto / PDF"| Gemini["🤖 Google Gemini IA - Extracción OCR"]
     Gemini -->|"JSON Estructurado"| Fastify
@@ -84,7 +84,7 @@ Crea un archivo `.env` en la raíz del proyecto (basado en `.env.example`):
 # Servidor
 PORT=4000
 HOST=0.0.0.0
-APP_BASE_URL=https://apagar.averiq.cloud
+APP_BASE_URL=https://apagar.averiqsj.com
 
 # Base de Datos PostgreSQL
 DATABASE_URL="postgresql://postgres:TU_PASSWORD@localhost:5432/cuentas_pagar_saas?schema=public"
@@ -131,11 +131,11 @@ npm run db:clean
 ## 🚀 Despliegue en Servidor AWS EC2 (Apache2 + PM2)
 
 ### 1. Configuración de VirtualHost en Apache2
-Crea `/etc/apache2/sites-available/apagar.averiq.cloud.conf`:
+Crea `/etc/apache2/sites-available/apagar.averiqsj.com.conf`:
 
 ```apache
 <VirtualHost *:80>
-    ServerName apagar.averiq.cloud
+    ServerName apagar.averiqsj.com
 
     ProxyPreserveHost On
     ProxyRequests Off
@@ -155,14 +155,14 @@ Crea `/etc/apache2/sites-available/apagar.averiq.cloud.conf`:
 
 Habilitar y recargar:
 ```bash
-sudo a2ensite apagar.averiq.cloud.conf
+sudo a2ensite apagar.averiqsj.com.conf
 sudo apache2ctl configtest
 sudo systemctl reload apache2
 ```
 
 ### 2. Certificado SSL con Certbot
 ```bash
-sudo certbot --apache -d apagar.averiq.cloud
+sudo certbot --apache -d apagar.averiqsj.com
 ```
 
 ### 3. Puesta en marcha con PM2
@@ -181,7 +181,7 @@ pm2 startup
 ```
 
 ### 4. Configurar Webhook en YCloud
-* **Webhook URL:** `https://apagar.averiq.cloud/api/webhook/ycloud`
+* **Webhook URL:** `https://apagar.averiqsj.com/api/webhook/ycloud`
 * **Eventos:** `whatsapp.inbound_message.received`
 
 ---
